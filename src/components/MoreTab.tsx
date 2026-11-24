@@ -1,0 +1,6596 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { 
+  AdminUser, MessageTemplate, BotSettings, UserReportRecord, FraudKeywordRule, JoinRequestRecord, AllowedChatEntry, KeyPoolRecord, KeyPoolMode, KeyGeneratorCharType, api 
+} from '../lib/api';
+import { toast } from '../lib/toast';
+import { 
+  MessageSquare, Users, Trash2, Settings, LogOut, 
+  ChevronRight, Edit2, Check, RefreshCw, Plus, Minus, Shield, Send, Sparkles, X, CheckCircle2, AlertCircle, Clock, Smile, Wifi,
+  Megaphone, Image as ImageIcon, Video as VideoIcon, Music, Mic, Pin, Paperclip, Loader2, Radio,
+  Flag, Ban, CheckCircle, ShieldAlert, ExternalLink, ShieldCheck,
+  Copy, Upload, Bot, VolumeX, Play, Square, RotateCcw, Key, Link2
+} from 'lucide-react';
+import { EmojiStore } from './EmojiStore';
+
+export const ALL_PERMISSIONS: { key: keyof AdminUser['permissions']; label: string; category: string; desc: string }[] = [
+  { key: 'files_view', label: 'View Files', category: 'Files & Media', desc: 'Browse file list and search files' },
+  { key: 'files_add', label: 'Upload / Add Files', category: 'Files & Media', desc: 'Upload documents, videos, photos' },
+  { key: 'files_edit', label: 'Edit Files', category: 'Files & Media', desc: 'Change file triggers, names, videos' },
+  { key: 'files_delete', label: 'Delete Files', category: 'Files & Media', desc: 'Permanently remove files' },
+  { key: 'links_view', label: 'View Links', category: 'Links & Web', desc: 'Browse configured link triggers' },
+  { key: 'links_add', label: 'Create Links', category: 'Links & Web', desc: 'Add new link triggers and buttons' },
+  { key: 'links_edit', label: 'Edit Links', category: 'Links & Web', desc: 'Modify link buttons, URLs, previews' },
+  { key: 'links_delete', label: 'Delete Links', category: 'Links & Web', desc: 'Permanently remove links' },
+  { key: 'messages_view', label: 'View Templates', category: 'Bot Messages', desc: 'View bot /start and automated messages' },
+  { key: 'messages_edit', label: 'Edit Templates', category: 'Bot Messages', desc: 'Modify bot messages and replies' },
+  { key: 'settings_edit', label: 'Bot Settings', category: 'System Control', desc: 'Configure bot token, force-sub, channels' },
+  { key: 'cleanup_manage', label: 'Message Cleanup', category: 'System Control', desc: 'Run cleanup and purge old messages' },
+  { key: 'admins_manage', label: 'Manage Sub-Admins', category: 'System Control', desc: 'Create and edit sub-admin permissions' },
+  { key: 'design_edit', label: 'Customize Design', category: 'System Control', desc: 'Change panel themes, colors, branding' },
+];
+
+interface MoreTabProps {
+  currentUser: AdminUser;
+  templates: Record<string, MessageTemplate>;
+  settings: BotSettings | null;
+  onRefreshTemplates: () => void;
+  onRefreshSettings: () => void;
+  onLogout: () => void;
+  onOpenBotSwitcher?: () => void;
+}
+
+type MoreSubView = 'menu' | 'templates' | 'admins' | 'settings' | 'sub_force' | 'group_management' | 'webhook' | 'broadcast' | 'emoji' | 'reports' | 'fraud' | 'whitelist' | 'key_generator';
+
+export const MoreTab: React.FC<MoreTabProps> = ({
+  currentUser,
+  templates,
+  settings,
+  onRefreshTemplates,
+  onRefreshSettings,
+  onLogout,
+  onOpenBotSwitcher
+}) => {
+  const [subView, setSubView] = useState<MoreSubView>('menu');
+
+  // Chat Whitelist / Ignore state
+  const [chatWhitelistEnabled, setChatWhitelistEnabled] = useState<boolean>(Boolean(settings?.chatWhitelistEnabled));
+  const [allowedChats, setAllowedChats] = useState<AllowedChatEntry[]>(Array.isArray(settings?.allowedChats) ? settings!.allowedChats : []);
+  const [whitelistLoading, setWhitelistLoading] = useState<boolean>(false);
+  const [whitelistSaving, setWhitelistSaving] = useState<boolean>(false);
+  const [newWhitelistChatId, setNewWhitelistChatId] = useState<string>('');
+  const [newWhitelistTitle, setNewWhitelistTitle] = useState<string>('');
+
+  // Webhook standalone state
+  const [webhookAppUrl, setWebhookAppUrl] = useState<string>(
+    typeof window !== 'undefined' ? window.location.origin : ''
+  );
+  const [webhookLoading, setWebhookLoading] = useState<boolean>(false);
+  const [webhookStatusMsg, setWebhookStatusMsg] = useState<{ type: 'success' | 'error'; text: string; details?: any } | null>(null);
+
+  // Broadcast state
+  const [broadcastUsersCount, setBroadcastUsersCount] = useState<number>(0);
+  const [broadcastMediaType, setBroadcastMediaType] = useState<'text' | 'photo' | 'video' | 'audio' | 'voice'>('text');
+  const [broadcastMessage, setBroadcastMessage] = useState<string>('');
+  const [broadcastMediaSource, setBroadcastMediaSource] = useState<'upload' | 'url'>('upload');
+  const [broadcastMediaUrl, setBroadcastMediaUrl] = useState<string>('');
+  const [broadcastFile, setBroadcastFile] = useState<File | null>(null);
+  const [broadcastPin, setBroadcastPin] = useState<boolean>(false);
+  const [broadcastSending, setBroadcastSending] = useState<boolean>(false);
+  const [broadcastTesting, setBroadcastTesting] = useState<boolean>(false);
+  const [broadcastResult, setBroadcastResult] = useState<{
+    type: 'success' | 'error';
+    text: string;
+    details?: { total: number; sent: number; failed: number };
+  } | null>(null);
+
+  // Reports state
+  const [reportsList, setReportsList] = useState<UserReportRecord[]>([]);
+  const [reportsLoading, setReportsLoading] = useState<boolean>(false);
+  const [reportFilter, setReportFilter] = useState<'all' | 'pending' | 'resolved' | 'dismissed'>('all');
+  const [reportActionLoading, setReportActionLoading] = useState<string | null>(null);
+
+  const [fraudRulesList, setFraudRulesList] = useState<FraudKeywordRule[]>([]);
+  const [fraudRulesLoading, setFraudRulesLoading] = useState<boolean>(false);
+  const [showAddFraudRule, setShowAddFraudRule] = useState<boolean>(false);
+  const [editingFraudRule, setEditingFraudRule] = useState<FraudKeywordRule | null>(null);
+  const [newFraudKeyword, setNewFraudKeyword] = useState<string>('');
+  const [newFraudMatchType, setNewFraudMatchType] = useState<'contains' | 'exact' | 'regex'>('contains');
+  const [newFraudAction, setNewFraudAction] = useState<'delete_and_warn' | 'delete' | 'warn' | 'mute' | 'ban' | 'reply_only'>('delete_and_warn');
+  const [newFraudDuration, setNewFraudDuration] = useState<string>('30m');
+  const [newFraudDurationUnit, setNewFraudDurationUnit] = useState<'minutes' | 'hours' | 'days' | 'permanent'>('minutes');
+  const [newFraudDurationValue, setNewFraudDurationValue] = useState<number>(30);
+  const [newFraudMaxWarnings, setNewFraudMaxWarnings] = useState<number>(3);
+  const [newFraudWarningText, setNewFraudWarningText] = useState<string>('');
+  const [newFraudMediaUrl, setNewFraudMediaUrl] = useState<string>('');
+  const [newFraudVideoFile, setNewFraudVideoFile] = useState<File | null>(null);
+  const [newFraudVideoName, setNewFraudVideoName] = useState<string>('');
+  const fraudVideoInputRef = useRef<HTMLInputElement>(null);
+  const [newFraudMediaType, setNewFraudMediaType] = useState<'text' | 'photo' | 'video' | 'audio' | 'voice'>('text');
+  const [savingFraudRule, setSavingFraudRule] = useState<boolean>(false);
+
+  // Key Generator state
+  const [keyPoolsList, setKeyPoolsList] = useState<KeyPoolRecord[]>([]);
+  const [keyPoolsLoading, setKeyPoolsLoading] = useState<boolean>(false);
+  const [keyGenMode, setKeyGenMode] = useState<KeyPoolMode>('pool');
+  const [keyGenTitle, setKeyGenTitle] = useState<string>('');
+  const [keyGenText, setKeyGenText] = useState<string>('');
+  const [keyGenSharedText, setKeyGenSharedText] = useState<string>('');
+  const [keyGenPrefix, setKeyGenPrefix] = useState<string>('DARK-');
+  const [keyGenLength, setKeyGenLength] = useState<string>('12');
+  const [keyGenCharType, setKeyGenCharType] = useState<KeyGeneratorCharType>('alphanumeric');
+  const [keyGenDurationUnit, setKeyGenDurationUnit] = useState<'never' | 'minutes' | 'hours' | 'days'>('never');
+  const [keyGenDurationValue, setKeyGenDurationValue] = useState<string>('24');
+  const [keyGenCreating, setKeyGenCreating] = useState<boolean>(false);
+  const [expandedKeyPoolId, setExpandedKeyPoolId] = useState<string | null>(null);
+  const [editingKeyPool, setEditingKeyPool] = useState<KeyPoolRecord | null>(null);
+  const [editKeyTitle, setEditKeyTitle] = useState<string>('');
+  const [editKeyText, setEditKeyText] = useState<string>('');
+  const [editSharedText, setEditSharedText] = useState<string>('');
+  const [editKeyPrefix, setEditKeyPrefix] = useState<string>('');
+  const [editKeyLength, setEditKeyLength] = useState<string>('12');
+  const [editKeyCharType, setEditKeyCharType] = useState<KeyGeneratorCharType>('alphanumeric');
+  const [editKeyStatus, setEditKeyStatus] = useState<'active' | 'disabled'>('active');
+  const [editKeyExpiryMode, setEditKeyExpiryMode] = useState<'keep' | 'never' | 'minutes' | 'hours' | 'days'>('keep');
+  const [editKeyDurationValue, setEditKeyDurationValue] = useState<string>('24');
+  const [editKeyResetClaims, setEditKeyResetClaims] = useState<boolean>(false);
+  const [savingKeyPool, setSavingKeyPool] = useState<boolean>(false);
+
+
+
+  // Admin Details Popup State & 7-Tap Gesture Trigger
+  const tapCountRef = useRef(0);
+  const lastTapTimeRef = useRef(0);
+  const [gestureFeedback, setGestureFeedback] = useState(false);
+  const [showAdminDetailsPopup, setShowAdminDetailsPopup] = useState(false);
+
+  // Dynamic Telegram Profile Photo resolution (WebApp initData / session photoUrl / Bot API proxy -> SVG User fallback)
+  const [ownerAvatarSrc, setOwnerAvatarSrc] = useState<string | null>(null);
+  const [ownerAvatarError, setOwnerAvatarError] = useState<boolean>(false);
+  const avatarBlobUrlRef = useRef<string | null>(null);
+  const triedProxyAvatarRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const revokePreviousBlob = () => {
+      if (avatarBlobUrlRef.current) {
+        try { URL.revokeObjectURL(avatarBlobUrlRef.current); } catch {}
+        avatarBlobUrlRef.current = null;
+      }
+    };
+
+    revokePreviousBlob();
+    triedProxyAvatarRef.current = false;
+    setOwnerAvatarError(false);
+
+    const tgWebAppUser =
+      typeof window !== 'undefined' ? (window as any).Telegram?.WebApp?.initDataUnsafe?.user : undefined;
+    const tgIdMatches =
+      !tgWebAppUser?.id ||
+      !currentUser.telegramId ||
+      !/^\d+$/.test(String(currentUser.telegramId)) ||
+      String(tgWebAppUser.id) === String(currentUser.telegramId);
+    const directPhotoUrl =
+      (tgIdMatches && typeof tgWebAppUser?.photo_url === 'string' && tgWebAppUser.photo_url.trim()) ||
+      (typeof currentUser.photoUrl === 'string' && currentUser.photoUrl.trim()) ||
+      '';
+
+    if (directPhotoUrl) {
+      setOwnerAvatarSrc(directPhotoUrl);
+    } else if (/^\d+$/.test(String(currentUser.telegramId || '').trim())) {
+      setOwnerAvatarSrc(null);
+      triedProxyAvatarRef.current = true;
+      api.getAuthAvatarBlobUrl().then((blobUrl) => {
+        if (cancelled) {
+          if (blobUrl) {
+            try { URL.revokeObjectURL(blobUrl); } catch {}
+          }
+          return;
+        }
+        if (blobUrl) {
+          avatarBlobUrlRef.current = blobUrl;
+          setOwnerAvatarSrc(blobUrl);
+        }
+      }).catch(() => {});
+    } else {
+      setOwnerAvatarSrc(null);
+    }
+
+    return () => {
+      cancelled = true;
+      revokePreviousBlob();
+    };
+  }, [currentUser.id, currentUser.telegramId, currentUser.photoUrl]);
+
+  const handleOwnerAvatarError = () => {
+    if (!triedProxyAvatarRef.current && /^\d+$/.test(String(currentUser.telegramId || '').trim())) {
+      triedProxyAvatarRef.current = true;
+      api.getAuthAvatarBlobUrl().then((blobUrl) => {
+        if (blobUrl) {
+          if (avatarBlobUrlRef.current) {
+            try { URL.revokeObjectURL(avatarBlobUrlRef.current); } catch {}
+          }
+          avatarBlobUrlRef.current = blobUrl;
+          setOwnerAvatarSrc(blobUrl);
+          setOwnerAvatarError(false);
+        } else {
+          setOwnerAvatarError(true);
+        }
+      }).catch(() => setOwnerAvatarError(true));
+    } else {
+      setOwnerAvatarError(true);
+    }
+  };
+
+  const handleHeaderSecretTap = () => {
+    const now = Date.now();
+    // Reset if more than 2 seconds between taps
+    if (now - lastTapTimeRef.current > 2000) {
+      tapCountRef.current = 1;
+    } else {
+      tapCountRef.current += 1;
+    }
+    lastTapTimeRef.current = now;
+
+    if (tapCountRef.current >= 7) {
+      tapCountRef.current = 0;
+      setGestureFeedback(true);
+      setShowAdminDetailsPopup(true);
+      setTimeout(() => setGestureFeedback(false), 800);
+    }
+  };
+
+  // Templates state
+  const [editingTemplate, setEditingTemplate] = useState<MessageTemplate | null>(null);
+  const [templateContent, setTemplateContent] = useState('');
+  const [templateMediaType, setTemplateMediaType] = useState<'none' | 'photo' | 'video'>('none');
+  const [templateMediaUrl, setTemplateMediaUrl] = useState('');
+  const [templateSaving, setTemplateSaving] = useState(false);
+
+  // Auto-focus, scroll to top, and cursor-position tracking refs for seamless editing
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const templateSelectionRef = useRef<{ start: number; end: number } | null>(null);
+  const maintenanceTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const maintenanceSelectionRef = useRef<{ start: number; end: number } | null>(null);
+  const broadcastTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const broadcastSelectionRef = useRef<{ start: number; end: number } | null>(null);
+  const modalScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const syncTextareaSelection = (
+    el: HTMLTextAreaElement | null,
+    selectionRef: React.MutableRefObject<{ start: number; end: number } | null>
+  ) => {
+    if (!el) return;
+    if (typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+      selectionRef.current = { start: el.selectionStart, end: el.selectionEnd };
+    }
+  };
+
+  const insertAtCursor = (
+    el: HTMLTextAreaElement | null,
+    currentValue: string,
+    snippet: string,
+    onUpdate: (nextValue: string) => void,
+    selectionRef?: React.MutableRefObject<{ start: number; end: number } | null>
+  ) => {
+    if (!el) {
+      onUpdate(`${currentValue}${snippet}`);
+      return;
+    }
+
+    const isFocused = document.activeElement === el;
+    const hasLiveSelection =
+      typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number';
+
+    let start = hasLiveSelection ? el.selectionStart : currentValue.length;
+    let end = hasLiveSelection ? el.selectionEnd : currentValue.length;
+
+    if (!isFocused && selectionRef?.current) {
+      start = selectionRef.current.start;
+      end = selectionRef.current.end;
+    }
+
+    start = Math.max(0, Math.min(start, currentValue.length));
+    end = Math.max(start, Math.min(end, currentValue.length));
+
+    const nextValue = currentValue.slice(0, start) + snippet + currentValue.slice(end);
+    const nextCursor = start + snippet.length;
+
+    if (selectionRef) {
+      selectionRef.current = { start: nextCursor, end: nextCursor };
+    }
+
+    onUpdate(nextValue);
+
+    requestAnimationFrame(() => {
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextCursor, nextCursor);
+      }
+    });
+  };
+
+  const wrapSelectionWithTag = (
+    el: HTMLTextAreaElement | null,
+    currentValue: string,
+    openTag: string,
+    closeTag: string,
+    fallbackInner: string,
+    onUpdate: (nextValue: string) => void,
+    selectionRef?: React.MutableRefObject<{ start: number; end: number } | null>
+  ) => {
+    if (!el) {
+      onUpdate(`${currentValue}${openTag}${fallbackInner}${closeTag}`);
+      return;
+    }
+
+    const isFocused = document.activeElement === el;
+    const hasLiveSelection =
+      typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number';
+
+    let start = hasLiveSelection ? el.selectionStart : currentValue.length;
+    let end = hasLiveSelection ? el.selectionEnd : currentValue.length;
+
+    if (!isFocused && selectionRef?.current) {
+      start = selectionRef.current.start;
+      end = selectionRef.current.end;
+    }
+
+    start = Math.max(0, Math.min(start, currentValue.length));
+    end = Math.max(start, Math.min(end, currentValue.length));
+
+    const selected = currentValue.slice(start, end);
+    const inner = selected || fallbackInner;
+    const snippet = `${openTag}${inner}${closeTag}`;
+    const nextValue = currentValue.slice(0, start) + snippet + currentValue.slice(end);
+    const nextCursorStart = start + openTag.length;
+    const nextCursorEnd = selected ? start + snippet.length : nextCursorStart + inner.length;
+
+    if (selectionRef) {
+      selectionRef.current = { start: nextCursorEnd, end: nextCursorEnd };
+    }
+
+    onUpdate(nextValue);
+
+    requestAnimationFrame(() => {
+      if (el) {
+        el.focus();
+        if (selected) {
+          el.setSelectionRange(nextCursorEnd, nextCursorEnd);
+        } else {
+          el.setSelectionRange(nextCursorStart, nextCursorEnd);
+        }
+      }
+    });
+  };
+
+  useEffect(() => {
+    if (editingTemplate) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      const timer = setTimeout(() => {
+        if (modalScrollRef.current) {
+          modalScrollRef.current.scrollTop = 0;
+        }
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+          const len = textareaRef.current.value.length;
+          textareaRef.current.setSelectionRange(len, len);
+          templateSelectionRef.current = { start: len, end: len };
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    } else {
+      templateSelectionRef.current = null;
+    }
+  }, [editingTemplate]);
+
+  // Admins state
+  const [adminsList, setAdminsList] = useState<any[]>([]);
+  const [adminsLoading, setAdminsLoading] = useState(false);
+  const [showAddAdmin, setShowAddAdmin] = useState(false);
+  const [editingAdmin, setEditingAdmin] = useState<any | null>(null);
+  const [savingAdmin, setSavingAdmin] = useState(false);
+  const [mintedAdminToken, setMintedAdminToken] = useState<{ adminId: string; name: string; token: string } | null>(null);
+  const [mintingTokenId, setMintingTokenId] = useState<string | null>(null);
+  const [botUsersForAdmin, setBotUsersForAdmin] = useState<any[]>([]);
+  const [editAdminForm, setEditAdminForm] = useState<{
+    name: string;
+    password: string;
+    enabled: boolean;
+    permissions: Record<string, boolean>;
+  }>({
+    name: '',
+    password: '',
+    enabled: true,
+    permissions: {
+      files_view: true,
+      files_add: true,
+      files_edit: true,
+      files_delete: false,
+      links_view: true,
+      links_add: true,
+      links_edit: true,
+      links_delete: false,
+      messages_view: true,
+      messages_edit: false,
+      admins_manage: false,
+      design_edit: false,
+      settings_edit: false,
+      cleanup_manage: false
+    }
+  });
+  const [newAdminData, setNewAdminData] = useState({
+    telegramId: '',
+    name: '',
+    password: '',
+    permissions: {
+      files_view: true,
+      files_add: true,
+      files_edit: true,
+      files_delete: false,
+      links_view: true,
+      links_add: true,
+      links_edit: true,
+      links_delete: false,
+      messages_view: true,
+      messages_edit: false,
+      admins_manage: false,
+      design_edit: false,
+      settings_edit: false,
+      cleanup_manage: false
+    }
+  });
+
+  // Settings state
+  const [botSettings, setBotSettings] = useState<any>({
+    botToken: '',
+    botUsername: settings?.botUsername || '',
+    rootAdminId: settings?.rootAdminId || '',
+    maxBotMessagesPerChat: settings?.maxBotMessagesPerChat || 10,
+    dailyCleanupEnabled: settings?.dailyCleanupEnabled ?? true,
+    cleanupAgeHours: settings?.cleanupAgeHours || 24,
+    autoDeleteDeliveryEnabled: settings?.autoDeleteDeliveryEnabled ?? true,
+    deliveryTimeoutMinutes: settings?.deliveryTimeoutMinutes || 10,
+    autoDeleteNoticeEnabled: settings?.autoDeleteNoticeEnabled ?? false,
+    maintenanceMode: settings?.maintenanceMode ?? false,
+    maintenanceNotice: settings?.maintenanceNotice || '',
+    forceSubEnabled: settings?.forceSubEnabled ?? false,
+    forceJoinMode: settings?.forceJoinMode === 'request_only' ? 'request_only' : 'auto_join',
+    antiForwardEnabled: settings?.antiForwardEnabled ?? false,
+    linkDeleteEnabled: settings?.linkDeleteEnabled ?? false,
+    banEnabled: settings?.banEnabled ?? true,
+    muteEnabled: settings?.muteEnabled ?? true,
+    groupWarningLimit: settings?.groupWarningLimit ?? 3,
+    autoApproveJoinRequests: settings?.autoApproveJoinRequests ?? true,
+    requiredChannels: settings?.requiredChannels || [],
+    adminNewPassword: ''
+  });
+  const [warningLimitInput, setWarningLimitInput] = useState<number>(settings?.groupWarningLimit ?? 3);
+  const [botStatusMsg, setBotStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [savingSection, setSavingSection] = useState<'autoDelete' | 'maintenance' | 'antiForward' | 'linkDelete' | 'ban' | 'mute' | 'warningLimit' | 'forceSub' | null>(null);
+  const [botRuntimeStatus, setBotRuntimeStatus] = useState<'active' | 'stopped'>(settings?.botStopped ? 'stopped' : 'active');
+  const [botRuntimePolling, setBotRuntimePolling] = useState<boolean>(!settings?.botStopped);
+  const [botLifecycleBusy, setBotLifecycleBusy] = useState<'start' | 'stop' | 'restart' | 'clean-memory' | null>(null);
+  const [lastMemCleanNote, setLastMemCleanNote] = useState<string>('');
+
+  // Sub Force Add Channel & Sync state
+  const [newChannelChatId, setNewChannelChatId] = useState('');
+  const [newChannelInviteLink, setNewChannelInviteLink] = useState('');
+  const [showManualAddChannel, setShowManualAddChannel] = useState(true);
+  const [addingChannel, setAddingChannel] = useState(false);
+  const [syncingChannels, setSyncingChannels] = useState(false);
+  const [pendingAllowChatError, setPendingAllowChatError] = useState<{
+    chatId: string;
+    name: string;
+    type?: 'channel' | 'supergroup' | 'group';
+    username?: string;
+    inviteLink?: string;
+  } | null>(null);
+  const [joinRequests, setJoinRequests] = useState<JoinRequestRecord[]>([]);
+  const [loadingJoinRequests, setLoadingJoinRequests] = useState(false);
+  const [showJoinRequests, setShowJoinRequests] = useState(false);
+
+  const prevServerSettingsRef = useRef<BotSettings | null>(null);
+
+  useEffect(() => {
+    if (settings) {
+      const prevSrv = prevServerSettingsRef.current;
+      setBotSettings((prev: any) => {
+        const next = { ...prev };
+        const syncIfChanged = <K extends keyof BotSettings>(key: K, value: any) => {
+          const prevVal = prevSrv ? prevSrv[key] : undefined;
+          if (!prevSrv || JSON.stringify(prevVal) !== JSON.stringify(settings[key])) {
+            next[key] = value;
+          }
+        };
+        syncIfChanged('botUsername', settings.botUsername || '');
+        syncIfChanged('rootAdminId', settings.rootAdminId || '');
+        syncIfChanged('maxBotMessagesPerChat', settings.maxBotMessagesPerChat || 10);
+        syncIfChanged('dailyCleanupEnabled', settings.dailyCleanupEnabled ?? true);
+        syncIfChanged('cleanupAgeHours', settings.cleanupAgeHours || 24);
+        syncIfChanged('autoDeleteDeliveryEnabled', settings.autoDeleteDeliveryEnabled ?? true);
+        syncIfChanged('deliveryTimeoutMinutes', settings.deliveryTimeoutMinutes || 10);
+        syncIfChanged('autoDeleteNoticeEnabled', settings.autoDeleteNoticeEnabled ?? false);
+        syncIfChanged('maintenanceMode', settings.maintenanceMode ?? false);
+        syncIfChanged('maintenanceNotice', settings.maintenanceNotice || '');
+        syncIfChanged('forceSubEnabled', settings.forceSubEnabled ?? false);
+        syncIfChanged('forceJoinMode', settings.forceJoinMode === 'request_only' ? 'request_only' : 'auto_join');
+        syncIfChanged('antiForwardEnabled', settings.antiForwardEnabled ?? false);
+        syncIfChanged('linkDeleteEnabled', settings.linkDeleteEnabled ?? false);
+        syncIfChanged('banEnabled', settings.banEnabled ?? true);
+        syncIfChanged('muteEnabled', settings.muteEnabled ?? true);
+        syncIfChanged('groupWarningLimit', settings.groupWarningLimit ?? 3);
+        syncIfChanged('autoApproveJoinRequests', settings.autoApproveJoinRequests ?? true);
+        syncIfChanged('requiredChannels', Array.isArray(settings.requiredChannels) ? settings.requiredChannels : []);
+        return next;
+      });
+      if (!prevSrv || prevSrv.groupWarningLimit !== settings.groupWarningLimit) {
+        setWarningLimitInput(Math.max(1, Math.min(100, Number(settings.groupWarningLimit) || 3)));
+      }
+      if (!prevSrv || prevSrv.chatWhitelistEnabled !== settings.chatWhitelistEnabled) {
+        setChatWhitelistEnabled(Boolean(settings.chatWhitelistEnabled));
+      }
+      if (!prevSrv || JSON.stringify(prevSrv.allowedChats) !== JSON.stringify(settings.allowedChats)) {
+        setAllowedChats(Array.isArray(settings.allowedChats) ? settings.allowedChats : []);
+      }
+      if (typeof settings.botStopped === 'boolean') {
+        setBotRuntimeStatus(settings.botStopped ? 'stopped' : 'active');
+      }
+      prevServerSettingsRef.current = settings;
+    }
+  }, [settings]);
+
+  const loadChatWhitelist = async () => {
+    setWhitelistLoading(true);
+    try {
+      const res = await api.getChatWhitelist();
+      setChatWhitelistEnabled(Boolean(res.chatWhitelistEnabled));
+      setAllowedChats(Array.isArray(res.allowedChats) ? res.allowedChats : []);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to load chat whitelist');
+    } finally {
+      setWhitelistLoading(false);
+    }
+  };
+
+  // Load admins / view data when switching subviews
+  useEffect(() => {
+    if (subView === 'admins') {
+      loadAdmins();
+    } else if (subView === 'settings') {
+      loadBotRuntimeStatus();
+    } else if (subView === 'sub_force') {
+      onRefreshSettings();
+      loadJoinRequests();
+      loadChatWhitelist();
+    } else if (subView === 'group_management') {
+      onRefreshSettings();
+      loadChatWhitelist();
+    } else if (subView === 'whitelist') {
+      loadChatWhitelist();
+    } else if (subView === 'key_generator') {
+      loadKeyPools();
+    }
+    // Refresh user count for broadcast
+    api.getUsers().then(users => {
+      setBroadcastUsersCount(users.length);
+    }).catch(() => {});
+  }, [subView]);
+
+  const loadBotRuntimeStatus = async () => {
+    try {
+      const info = await api.getBotInfo();
+      const stopped = info?.botStatus === 'stopped';
+      setBotRuntimeStatus(stopped ? 'stopped' : 'active');
+      setBotRuntimePolling(Boolean(info?.pollingActive));
+    } catch {}
+  };
+
+  const handleBotLifecycleAction = async (action: 'start' | 'stop' | 'restart' | 'clean-memory') => {
+    const targetId = api.getActiveBotId() || currentUser.botId || 'main';
+    setBotLifecycleBusy(action);
+    setBotStatusMsg(null);
+    try {
+      if (action === 'start') {
+        const res = await api.startBot(targetId);
+        setBotRuntimeStatus('active');
+        setBotRuntimePolling(true);
+        toast.success(res.message || 'Bot started!');
+        setBotStatusMsg({ type: 'success', text: res.message || 'Bot started and listening for updates.' });
+      } else if (action === 'stop') {
+        const res = await api.stopBot(targetId);
+        setBotRuntimeStatus('stopped');
+        setBotRuntimePolling(false);
+        toast.success(res.message || 'Bot stopped!');
+        setBotStatusMsg({ type: 'success', text: res.message || 'Bot stopped cleanly.' });
+      } else if (action === 'restart') {
+        const res = await api.restartBot(targetId);
+        setBotRuntimeStatus('active');
+        setBotRuntimePolling(true);
+        toast.success(res.message || 'Bot restarted!');
+        setBotStatusMsg({ type: 'success', text: res.message || 'Bot restarted cleanly.' });
+      } else {
+        const res = await api.cleanBotMemory(targetId);
+        setLastMemCleanNote(`Cleared ${res.clearedRuntimeEntries + res.clearedStorageEntries} cached entries · Heap ${res.heapUsedMb} MB`);
+        toast.success(res.message || 'Memory cleaned!');
+        setBotStatusMsg({ type: 'success', text: res.message || 'Memory caches cleaned without affecting database items.' });
+      }
+      onRefreshSettings();
+    } catch (err: any) {
+      const msg = err?.message || `Failed to ${action} bot`;
+      toast.error(msg);
+      setBotStatusMsg({ type: 'error', text: msg });
+    } finally {
+      setBotLifecycleBusy(null);
+    }
+  };
+
+  const loadJoinRequests = async () => {
+    setLoadingJoinRequests(true);
+    try {
+      const res = await api.getJoinRequests();
+      setJoinRequests(res.requests || []);
+    } catch (err: any) {
+      console.warn('Failed to load join requests:', err);
+    } finally {
+      setLoadingJoinRequests(false);
+    }
+  };
+
+  const handleApproveJoinRequest = async (chatId: string, userId: string) => {
+    try {
+      await api.approveJoinRequest(chatId, userId);
+      toast.success('Join request approved successfully!');
+      loadJoinRequests();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to approve join request');
+    }
+  };
+
+  const loadAdmins = async () => {
+    setAdminsLoading(true);
+    try {
+      const [data, botUsers] = await Promise.all([
+        api.getAdmins(),
+        api.getUsers().catch(() => [])
+      ]);
+      setAdminsList(data);
+      setBotUsersForAdmin(Array.isArray(botUsers) ? botUsers : []);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setAdminsLoading(false);
+    }
+  };
+
+  const handleGenerateAdminToken = async (adm: any) => {
+    setMintingTokenId(adm.id);
+    try {
+      const res = await api.generateAdminToken(adm.id);
+      setMintedAdminToken({ adminId: adm.id, name: adm.name, token: res.accessToken });
+      try {
+        await navigator.clipboard.writeText(res.accessToken);
+        toast.success(`Access token minted & copied for ${adm.name}`);
+      } catch {
+        toast.success(`Access token minted for ${adm.name}`);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to generate access token');
+    } finally {
+      setMintingTokenId(null);
+    }
+  };
+
+  const savePartialBotSetting = async (
+    section: 'autoDelete' | 'maintenance' | 'antiForward' | 'linkDelete' | 'ban' | 'mute' | 'warningLimit' | 'forceSub',
+    partialPayload: Record<string, any>,
+    successText: string,
+    rollback?: () => void
+  ) => {
+    setSavingSection(section);
+    setBotStatusMsg(null);
+    try {
+      const res = await api.updateSettings(partialPayload);
+      if (res && res.settings) {
+        setBotSettings((prev: any) => ({
+          ...prev,
+          ...partialPayload
+        }));
+      }
+      onRefreshSettings();
+      toast.success(successText);
+    } catch (err: any) {
+      if (rollback) rollback();
+      const errText = err?.message || 'Failed to update setting';
+      toast.error(errText);
+    } finally {
+      setSavingSection(null);
+    }
+  };
+
+  const handleUpdateDeliveryTimeout = async (newMins: number) => {
+    const prevMins = botSettings.deliveryTimeoutMinutes || 10;
+    const mins = Math.max(1, Math.min(10080, Math.round(Number(newMins) || 10)));
+    setBotSettings((prev: any) => ({ ...prev, deliveryTimeoutMinutes: mins }));
+    await savePartialBotSetting(
+      'autoDelete',
+      { deliveryTimeoutMinutes: mins },
+      `File auto-delete timer set to ${mins} minute${mins === 1 ? '' : 's'}!`,
+      () => setBotSettings((prev: any) => ({ ...prev, deliveryTimeoutMinutes: prevMins }))
+    );
+  };
+
+  // Initial load for reports, fraud rules, and key pools
+  useEffect(() => {
+    loadReports();
+    loadFraudRules();
+    loadKeyPools();
+  }, []);
+
+  useEffect(() => {
+    if (subView === 'reports') {
+      loadReports();
+    } else if (subView === 'fraud') {
+      loadFraudRules();
+    } else if (subView === 'key_generator') {
+      loadKeyPools();
+    }
+  }, [subView]);
+
+  const hasExpiringKeyPools = keyPoolsList.some((p) => Boolean(p.expiresAt));
+
+  useEffect(() => {
+    if (subView !== 'key_generator' || !hasExpiringKeyPools) return;
+    const timer = window.setInterval(() => {
+      loadKeyPools(true);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [subView, hasExpiringKeyPools]);
+
+  const loadKeyPools = async (silent = false) => {
+    if (!silent) setKeyPoolsLoading(true);
+    try {
+      const res = await api.getKeyPools();
+      setKeyPoolsList(Array.isArray(res.pools) ? res.pools : []);
+    } catch (err: any) {
+      if (!silent) console.warn('Failed to load key pools:', err);
+    } finally {
+      if (!silent) setKeyPoolsLoading(false);
+    }
+  };
+
+  const loadReports = async () => {
+    setReportsLoading(true);
+    try {
+      const data = await api.getReports();
+      setReportsList(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      console.warn('Failed to load reports:', err);
+    } finally {
+      setReportsLoading(false);
+    }
+  };
+
+  const loadFraudRules = async () => {
+    setFraudRulesLoading(true);
+    try {
+      const data = await api.getFraudRules();
+      const sorted = (Array.isArray(data) ? [...data] : []).sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (timeB !== timeA) return timeB - timeA;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      });
+      setFraudRulesList(sorted);
+    } catch (err: any) {
+      console.warn('Failed to load fraud rules:', err);
+    } finally {
+      setFraudRulesLoading(false);
+    }
+  };
+
+  const handleResolveReport = async (reportId: string, banUser: boolean) => {
+    setReportActionLoading(reportId);
+    try {
+      await api.updateReport(reportId, { status: 'resolved', banUser });
+      toast.success(banUser ? 'User banned and report marked as resolved!' : 'Report resolved!');
+      await loadReports();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update report');
+    } finally {
+      setReportActionLoading(null);
+    }
+  };
+
+  const handleDismissReport = async (reportId: string) => {
+    setReportActionLoading(reportId);
+    try {
+      await api.updateReport(reportId, { status: 'dismissed' });
+      toast.info('Report dismissed.');
+      await loadReports();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to dismiss report');
+    } finally {
+      setReportActionLoading(null);
+    }
+  };
+
+  const handleDeleteReport = async (reportId: string) => {
+    if (!window.confirm('Delete this report record?')) return;
+    try {
+      await api.deleteReport(reportId);
+      toast.success('Report deleted.');
+      await loadReports();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete report');
+    }
+  };
+
+  const resetFraudForm = () => {
+    setEditingFraudRule(null);
+    setNewFraudKeyword('');
+    setNewFraudMatchType('contains');
+    setNewFraudAction('delete_and_warn');
+    setNewFraudDuration('30m');
+    setNewFraudDurationUnit('minutes');
+    setNewFraudDurationValue(30);
+    setNewFraudMaxWarnings(3);
+    setNewFraudWarningText('');
+    setNewFraudMediaUrl('');
+    setNewFraudVideoFile(null);
+    setNewFraudVideoName('');
+    setNewFraudMediaType('text');
+    if (fraudVideoInputRef.current) fraudVideoInputRef.current.value = '';
+  };
+
+  const startEditFraudRule = (rule: FraudKeywordRule) => {
+    setEditingFraudRule(rule);
+    setNewFraudKeyword(rule.keyword || '');
+    setNewFraudMatchType(rule.matchType || 'contains');
+    setNewFraudAction(rule.action || 'delete_and_warn');
+    const dur = rule.duration || '30m';
+    setNewFraudDuration(dur);
+    if (dur === 'permanent') {
+      setNewFraudDurationUnit('permanent');
+      setNewFraudDurationValue(30);
+    } else if (dur.endsWith('h')) {
+      setNewFraudDurationUnit('hours');
+      setNewFraudDurationValue(Math.max(1, parseInt(dur, 10) || 1));
+    } else if (dur.endsWith('d')) {
+      setNewFraudDurationUnit('days');
+      setNewFraudDurationValue(Math.max(1, parseInt(dur, 10) || 1));
+    } else {
+      setNewFraudDurationUnit('minutes');
+      setNewFraudDurationValue(Math.max(1, parseInt(dur, 10) || 30));
+    }
+    setNewFraudMaxWarnings(rule.maxWarnings || 3);
+    setNewFraudWarningText(rule.warningText || rule.customMessage || '');
+    setNewFraudMediaUrl(rule.mediaUrl || '');
+    setNewFraudMediaType((rule.mediaType && rule.mediaType !== 'none' ? rule.mediaType : 'text') as any);
+    setNewFraudVideoFile(null);
+    setNewFraudVideoName('');
+    if (fraudVideoInputRef.current) fraudVideoInputRef.current.value = '';
+    setShowAddFraudRule(true);
+  };
+
+  const handleCreateFraudRule = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!newFraudKeyword.trim()) {
+      toast.error('Please enter a keyword');
+      return;
+    }
+    setSavingFraudRule(true);
+    try {
+      let finalMediaUrl = newFraudMediaUrl.trim();
+      let finalMediaType = newFraudMediaType;
+
+      // Handle direct video file upload if provided from device/gallery
+      if (newFraudVideoFile) {
+        toast.info('Uploading video file from device...');
+        const vFd = new FormData();
+        vFd.append('file', newFraudVideoFile);
+        vFd.append('fileName', newFraudVideoFile.name);
+        vFd.append('fileType', 'video');
+        const vRes = await api.uploadFile(vFd);
+        finalMediaUrl = vRes.fileId || vRes.uploadedFileId || '';
+        finalMediaType = 'video';
+      }
+
+      if (editingFraudRule) {
+        await api.updateFraudRule(editingFraudRule.id, {
+          keyword: newFraudKeyword.trim(),
+          matchType: newFraudMatchType,
+          action: newFraudAction,
+          duration: (newFraudAction === 'mute' || newFraudAction === 'ban') ? newFraudDuration : undefined,
+          maxWarnings: newFraudMaxWarnings,
+          warningText: newFraudWarningText.trim(),
+          mediaUrl: finalMediaUrl,
+          mediaType: finalMediaType !== 'text' ? (finalMediaType as any) : 'text',
+        });
+        toast.success(`Rule for "${newFraudKeyword.trim()}" updated!`);
+      } else {
+        await api.createFraudRule({
+          keyword: newFraudKeyword.trim(),
+          matchType: newFraudMatchType,
+          action: newFraudAction,
+          duration: (newFraudAction === 'mute' || newFraudAction === 'ban') ? newFraudDuration : undefined,
+          maxWarnings: newFraudMaxWarnings,
+          warningText: newFraudWarningText.trim() || undefined,
+          mediaUrl: finalMediaUrl || undefined,
+          mediaType: finalMediaType !== 'text' ? (finalMediaType as any) : undefined,
+          enabled: true
+        });
+        toast.success(`Rule for "${newFraudKeyword.trim()}" created!`);
+      }
+
+      resetFraudForm();
+      setShowAddFraudRule(false);
+      await loadFraudRules();
+    } catch (err: any) {
+      toast.error(err.message || (editingFraudRule ? 'Failed to update rule' : 'Failed to create rule'));
+    } finally {
+      setSavingFraudRule(false);
+    }
+  };
+
+  const handleToggleFraudRule = async (rule: FraudKeywordRule) => {
+    try {
+      await api.updateFraudRule(rule.id, { enabled: !rule.enabled });
+      toast.info(`Rule ${!rule.enabled ? 'activated' : 'paused'}`);
+      await loadFraudRules();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to toggle rule');
+    }
+  };
+
+  const handleDeleteFraudRule = async (ruleId: string) => {
+    if (!window.confirm('Delete this restricted keyword rule?')) return;
+    try {
+      await api.deleteFraudRule(ruleId);
+      toast.success('Rule deleted.');
+      await loadFraudRules();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete rule');
+    }
+  };
+
+  // Save template edit
+  const handleSaveTemplate = async () => {
+    if (!editingTemplate) return;
+    setTemplateSaving(true);
+    try {
+      await api.updateTemplate(editingTemplate.key, templateContent, {
+        mediaType: templateMediaType,
+        mediaUrl: templateMediaUrl.trim()
+      });
+      toast.success('Message template saved successfully!');
+      onRefreshTemplates();
+      setEditingTemplate(null);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to save template');
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const renderTemplateEditModal = () => {
+    if (!editingTemplate) return null;
+
+    return createPortal(
+      <div
+        ref={modalScrollRef}
+        onClick={() => setEditingTemplate(null)}
+        className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-black/85 backdrop-blur-md overflow-y-auto overscroll-contain animate-in fade-in duration-200"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="glass-panel w-full max-w-lg max-h-[90dvh] overflow-y-auto overscroll-contain rounded-3xl p-4 sm:p-5 border border-red-500/35 shadow-[0_0_50px_-10px_rgba(239,68,68,0.35),0_25px_50px_-12px_rgba(0,0,0,0.95)] space-y-4 my-auto relative animate-in zoom-in-95 duration-200"
+        >
+          {/* Subtle top border glow */}
+          <div
+            className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-[1.5px] pointer-events-none"
+            style={{ background: 'linear-gradient(90deg, transparent, #ef4444, transparent)' }}
+          />
+
+          <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center shrink-0">
+                <Edit2 className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="font-bold text-white text-sm truncate">{editingTemplate.name}</h4>
+                <p className="text-[11px] text-zinc-400 truncate">{editingTemplate.description || 'Edit bot message template'}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setEditingTemplate(null)}
+              className="w-8 h-8 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1.5">
+              <label className="text-xs font-semibold text-zinc-300">Message Text (HTML format)</label>
+              <span className="text-[10px] text-zinc-500">Supports &lt;b&gt;, &lt;i&gt;, &lt;code&gt;</span>
+            </div>
+            <textarea
+              ref={textareaRef}
+              rows={5}
+              value={templateContent}
+              onChange={(e) => {
+                setTemplateContent(e.target.value);
+                syncTextareaSelection(e.currentTarget, templateSelectionRef);
+              }}
+              onSelect={(e) => syncTextareaSelection(e.currentTarget, templateSelectionRef)}
+              onKeyUp={(e) => syncTextareaSelection(e.currentTarget, templateSelectionRef)}
+              onClick={(e) => syncTextareaSelection(e.currentTarget, templateSelectionRef)}
+              onBlur={(e) => syncTextareaSelection(e.currentTarget, templateSelectionRef)}
+              className="w-full bg-[#101018] border border-zinc-700/80 rounded-2xl p-3.5 text-xs text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/40"
+              placeholder="Type your bot message..."
+            />
+          </div>
+
+          {/* Rich Media Attachment for /start Welcome Message */}
+          {editingTemplate.key === 'START_MESSAGE' && (
+            <div className="p-3.5 rounded-2xl bg-[#0f0f18] border border-zinc-800 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-white">Attached Media Header</label>
+                <span className="text-[10px] text-zinc-400">Optional Photo or Video</span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {(['none', 'photo', 'video'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setTemplateMediaType(m)}
+                    className={`min-w-0 py-2 px-1 sm:px-2 rounded-xl text-[11px] sm:text-xs font-semibold capitalize border transition-all cursor-pointer truncate ${
+                      templateMediaType === m
+                        ? 'bg-blue-600/20 text-sky-300 border-blue-500/60 shadow-sm'
+                        : 'bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-white'
+                    }`}
+                  >
+                    {m === 'none' ? 'None' : m === 'photo' ? '📸 Photo' : '🎥 Video'}
+                  </button>
+                ))}
+              </div>
+
+              {templateMediaType !== 'none' && (
+                <div className="space-y-2 pt-1">
+                  <input
+                    type="text"
+                    value={templateMediaUrl}
+                    onChange={(e) => setTemplateMediaUrl(e.target.value)}
+                    placeholder={
+                      templateMediaType === 'photo'
+                        ? 'https://example.com/banner.jpg, Telegram file_id, or upload'
+                        : 'https://example.com/video.mp4, Telegram file_id, or upload'
+                    }
+                    className="w-full bg-zinc-950 border border-zinc-700/80 rounded-xl py-2 px-3 text-xs text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/40"
+                  />
+
+                  <div className="flex items-center gap-2">
+                    <label className="flex-1 py-2 px-3 rounded-xl border border-dashed border-red-500/40 hover:border-red-400 bg-red-500/10 hover:bg-red-500/15 flex items-center justify-center gap-1.5 cursor-pointer text-xs text-red-300 font-semibold transition-all">
+                      <span>📁 Choose {templateMediaType === 'photo' ? 'Photo' : 'Video'} from Device</span>
+                      <input
+                        type="file"
+                        accept={templateMediaType === 'photo' ? 'image/*' : 'video/*'}
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const formData = new FormData();
+                            formData.append('file', file);
+                            formData.append('fileType', templateMediaType);
+                            formData.append('fileName', file.name);
+                            const data = await api.uploadFile(formData);
+                            if (data.success && (data.fileId || data.uploadedFileId)) {
+                              setTemplateMediaUrl(data.uploadedFileId || data.fileId);
+                            } else {
+                              alert('Upload failed');
+                            }
+                          } catch (err: any) {
+                            alert(err.message || 'Upload error');
+                          }
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Available Placeholders / Variables */}
+          <div className="text-[11px] text-zinc-400">
+            <span className="font-medium text-zinc-300">Quick Variables (Tap to insert):</span>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {editingTemplate.key === 'START_MESSAGE' && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    insertAtCursor(
+                      textareaRef.current,
+                      templateContent,
+                      '@username',
+                      setTemplateContent,
+                      templateSelectionRef
+                    )
+                  }
+                  className="bg-indigo-950/70 border border-indigo-500/50 px-2 py-1 rounded-lg text-indigo-300 text-[10px] font-mono hover:bg-indigo-900/60 cursor-pointer font-bold transition-all active:scale-95"
+                >
+                  +@username
+                </button>
+              )}
+              {(editingTemplate.variables || ['user_name', 'user_id', 'bot_name']).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    insertAtCursor(
+                      textareaRef.current,
+                      templateContent,
+                      `{${v}}`,
+                      setTemplateContent,
+                      templateSelectionRef
+                    )
+                  }
+                  className="bg-zinc-800/90 border border-zinc-700/80 px-2 py-1 rounded-lg text-red-400 text-[10px] font-mono hover:bg-zinc-700 cursor-pointer transition-all active:scale-95"
+                >
+                  +{`{${v}}`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-2.5 pt-2">
+            <button
+              type="button"
+              onClick={() => setEditingTemplate(null)}
+              className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-semibold cursor-pointer shadow-md shadow-red-600/30 transition-all active:scale-95"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveTemplate}
+              disabled={templateSaving}
+              className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold cursor-pointer shadow-md shadow-blue-600/30 disabled:opacity-50 transition-all active:scale-95"
+            >
+              {templateSaving ? 'Saving...' : 'Save Template'}
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body
+    );
+  };
+
+  // Add sub-admin
+  const handleCreateAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await api.createAdmin(newAdminData);
+      setShowAddAdmin(false);
+      loadAdmins();
+      setNewAdminData({
+        telegramId: '',
+        name: '',
+        password: '',
+        permissions: {
+          files_view: true,
+          files_add: true,
+          files_edit: true,
+          files_delete: false,
+          links_view: true,
+          links_add: true,
+          links_edit: true,
+          links_delete: false,
+          messages_view: true,
+          messages_edit: false,
+          admins_manage: false,
+          design_edit: false,
+          settings_edit: false,
+          cleanup_manage: false
+        }
+      });
+      toast.success('Sub-admin created successfully!');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to add admin');
+    }
+  };
+
+  const handleStartEditAdmin = (adm: any) => {
+    setEditingAdmin(adm);
+    setEditAdminForm({
+      name: adm.name || '',
+      password: '',
+      enabled: adm.enabled !== false,
+      permissions: {
+        files_view: Boolean(adm.permissions?.files_view),
+        files_add: Boolean(adm.permissions?.files_add),
+        files_edit: Boolean(adm.permissions?.files_edit),
+        files_delete: Boolean(adm.permissions?.files_delete),
+        links_view: Boolean(adm.permissions?.links_view),
+        links_add: Boolean(adm.permissions?.links_add),
+        links_edit: Boolean(adm.permissions?.links_edit),
+        links_delete: Boolean(adm.permissions?.links_delete),
+        messages_view: Boolean(adm.permissions?.messages_view),
+        messages_edit: Boolean(adm.permissions?.messages_edit),
+        admins_manage: Boolean(adm.permissions?.admins_manage),
+        design_edit: Boolean(adm.permissions?.design_edit),
+        settings_edit: Boolean(adm.permissions?.settings_edit),
+        cleanup_manage: Boolean(adm.permissions?.cleanup_manage),
+      }
+    });
+  };
+
+  const handleUpdateAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAdmin) return;
+    setSavingAdmin(true);
+    try {
+      const payload: any = {
+        name: editAdminForm.name.trim(),
+        enabled: editAdminForm.enabled,
+        permissions: editAdminForm.permissions
+      };
+      if (editAdminForm.password && editAdminForm.password.trim().length >= 6) {
+        payload.password = editAdminForm.password.trim();
+      }
+      await api.updateAdmin(editingAdmin.id, payload);
+      toast.success(`Sub-admin "${editAdminForm.name}" updated successfully!`);
+      setEditingAdmin(null);
+      await loadAdmins();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update admin');
+    } finally {
+      setSavingAdmin(false);
+    }
+  };
+
+  const handleToggleAdminStatus = async (adm: any) => {
+    try {
+      const nextStatus = adm.enabled === false;
+      await api.updateAdmin(adm.id, { enabled: nextStatus });
+      toast.success(`Admin "${adm.name}" ${nextStatus ? 'enabled' : 'disabled'}`);
+      await loadAdmins();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to change admin status');
+    }
+  };
+
+  const handleDeleteAdmin = async (id: string) => {
+    if (!confirm('Are you sure you want to remove this admin?')) return;
+    try {
+      await api.deleteAdmin(id);
+      loadAdmins();
+      toast.success('Sub-admin removed successfully');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete admin');
+    }
+  };
+
+  // Sub Force Channel Management Handlers
+  const handleAddForceSubChannel = async () => {
+    const cleanChatId = newChannelChatId.trim();
+    const cleanInviteLink = newChannelInviteLink.trim();
+    if (!cleanChatId) {
+      toast.error('Please enter the Channel ID or Username');
+      return;
+    }
+
+    setAddingChannel(true);
+    setPendingAllowChatError(null);
+    try {
+      const res = await api.addForceSubChannel({
+        chatId: cleanChatId,
+        inviteLink: cleanInviteLink || undefined
+      });
+      setBotSettings((prev: any) => ({
+        ...prev,
+        requiredChannels: Array.isArray(res.channels) ? res.channels : prev.requiredChannels
+      }));
+      setNewChannelChatId('');
+      setNewChannelInviteLink('');
+      onRefreshSettings();
+      toast.success(
+        res.detectedByTelegram
+          ? `Detected "${res.channel.name}" and added to Sub Force!`
+          : `Added "${res.channel.name}" to Sub Force!`
+      );
+    } catch (err: any) {
+      if (err?.requiresAllowChat && err?.resolvedChat) {
+        setPendingAllowChatError(err.resolvedChat);
+      }
+      toast.error(err?.message || 'Failed to add channel');
+    } finally {
+      setAddingChannel(false);
+    }
+  };
+
+  const handleSyncBotChannels = async () => {
+    setSyncingChannels(true);
+    try {
+      const res = await api.syncChannels();
+      setBotSettings((prev: any) => ({
+        ...prev,
+        requiredChannels: Array.isArray(res.channels) ? res.channels : prev.requiredChannels
+      }));
+      onRefreshSettings();
+      toast.success(res.message || `Synced ${res.channels?.length || 0} channel(s)`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to sync bot channels');
+    } finally {
+      setSyncingChannels(false);
+    }
+  };
+
+  const handleAllowSubForceChannelChat = async (
+    target: { chatId: string; name?: string; type?: 'channel' | 'supergroup' | 'group'; username?: string },
+    retryAddAfterAllow: boolean = false
+  ) => {
+    setWhitelistSaving(true);
+    try {
+      const wlRes = await api.addAllowedChat({
+        chatId: target.chatId,
+        title: target.name,
+        type: target.type || 'channel',
+        username: target.username
+      });
+      setChatWhitelistEnabled(Boolean(wlRes.chatWhitelistEnabled));
+      setAllowedChats(Array.isArray(wlRes.allowedChats) ? wlRes.allowedChats : []);
+
+      if (retryAddAfterAllow) {
+        const res = await api.addForceSubChannel({
+          chatId: newChannelChatId.trim() || target.chatId,
+          inviteLink: newChannelInviteLink.trim() || undefined
+        });
+        setBotSettings((prev: any) => ({
+          ...prev,
+          requiredChannels: Array.isArray(res.channels) ? res.channels : prev.requiredChannels
+        }));
+        setPendingAllowChatError(null);
+        setNewChannelChatId('');
+        setNewChannelInviteLink('');
+        toast.success(`Allowed chat & added "${res.channel.name}" to Sub Force!`);
+      } else {
+        toast.success(`Allow Chat granted for ${target.name || target.chatId}`);
+      }
+      onRefreshSettings();
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to grant Allow Chat permission');
+    } finally {
+      setWhitelistSaving(false);
+    }
+  };
+
+  const handleToggleChannel = async (channelId: string, currentEnabled: boolean) => {
+    const nextEnabled = !currentEnabled;
+    setBotSettings((prev: any) => {
+      const existing = Array.isArray(prev.requiredChannels) ? prev.requiredChannels : [];
+      const updated = existing.map((c: any) => 
+        c.id === channelId ? { ...c, enabled: nextEnabled } : c
+      );
+      return { ...prev, requiredChannels: updated };
+    });
+
+    try {
+      await api.toggleChannel(channelId, nextEnabled);
+      onRefreshSettings();
+      toast.success(nextEnabled ? 'Channel enabled for Sub Force' : 'Channel disabled & excluded from Sub Force');
+    } catch (err: any) {
+      setBotSettings((prev: any) => {
+        const existing = Array.isArray(prev.requiredChannels) ? prev.requiredChannels : [];
+        const reverted = existing.map((c: any) => 
+          c.id === channelId ? { ...c, enabled: currentEnabled } : c
+        );
+        return { ...prev, requiredChannels: reverted };
+      });
+      toast.error(err.message || 'Failed to toggle channel status');
+    }
+  };
+
+  const handleOpenForceSubTemplate = () => {
+    const forceSubTpl = templates['FORCESUB_PROMPT'];
+    if (forceSubTpl) {
+      setEditingTemplate(forceSubTpl);
+      setTemplateContent(forceSubTpl.content);
+      setTemplateMediaType(forceSubTpl.mediaType || 'none');
+      setTemplateMediaUrl(forceSubTpl.mediaUrl || '');
+    } else {
+      setSubView('templates');
+    }
+  };
+
+  const handleRemoveForceSubChannel = async (channelId: string) => {
+    const prevList = Array.isArray(botSettings.requiredChannels) ? botSettings.requiredChannels : [];
+    setBotSettings((prev: any) => ({
+      ...prev,
+      requiredChannels: prevList.filter((c: any) => c.id !== channelId && c.chatId !== channelId)
+    }));
+    try {
+      const res = await api.removeForceSubChannel(channelId);
+      setBotSettings((prev: any) => ({
+        ...prev,
+        requiredChannels: Array.isArray(res.channels) ? res.channels : prev.requiredChannels
+      }));
+      onRefreshSettings();
+      toast.success('Channel removed from Sub Force');
+    } catch (err: any) {
+      setBotSettings((prev: any) => ({ ...prev, requiredChannels: prevList }));
+      toast.error(err?.message || 'Failed to remove channel');
+    }
+  };
+
+  const handleSaveForceSubChannels = async () => {
+    await savePartialBotSetting(
+      'forceSub',
+      {
+        forceSubEnabled: Boolean(botSettings.forceSubEnabled),
+        requiredChannels: Array.isArray(botSettings.requiredChannels) ? botSettings.requiredChannels : []
+      },
+      'Sub Force settings saved!'
+    );
+  };
+
+  const handleRegisterWebhook = async () => {
+    if (!webhookAppUrl.trim()) {
+      setWebhookStatusMsg({ type: 'error', text: 'Please enter a valid Application URL' });
+      toast.error('Please enter a valid Application URL');
+      return;
+    }
+    setWebhookLoading(true);
+    setWebhookStatusMsg(null);
+    try {
+      const res = await api.setWebhook(webhookAppUrl.trim());
+      if (res.ok) {
+        setWebhookStatusMsg({ type: 'success', text: 'Telegram webhook registered successfully!' });
+        toast.success('Telegram webhook registered successfully!');
+      } else {
+        const errText = res.description || 'Webhook registration error';
+        setWebhookStatusMsg({ type: 'error', text: errText });
+        toast.error(errText);
+      }
+    } catch (err: any) {
+      const errText = err.message || 'Webhook failed';
+      setWebhookStatusMsg({ type: 'error', text: errText });
+      toast.error(errText);
+    } finally {
+      setWebhookLoading(false);
+    }
+  };
+
+  const handleCheckBotInfo = async () => {
+    setWebhookLoading(true);
+    setWebhookStatusMsg(null);
+    try {
+      const res = await api.getBotInfo();
+      if (res.ok && res.result) {
+        setWebhookStatusMsg({
+          type: 'success',
+          text: `Connected: @${res.result.username} (${res.result.first_name || 'Bot'})`,
+          details: res.result
+        });
+      } else {
+        setWebhookStatusMsg({ type: 'error', text: res.description || 'Bot token invalid or unreachable' });
+      }
+    } catch (err: any) {
+      setWebhookStatusMsg({ type: 'error', text: err.message || 'Connection test failed' });
+    } finally {
+      setWebhookLoading(false);
+    }
+  };
+
+  // Broadcast Handlers
+  const handleSendBroadcast = async () => {
+    if (broadcastMediaType === 'text' && !broadcastMessage.trim()) {
+      alert('Please enter a notification message to broadcast.');
+      return;
+    }
+    if (broadcastMediaType !== 'text' && broadcastMediaSource === 'upload' && !broadcastFile) {
+      alert('Please select a media file to upload from your device.');
+      return;
+    }
+    if (broadcastMediaType !== 'text' && broadcastMediaSource === 'url' && !broadcastMediaUrl.trim()) {
+      alert('Please enter a media URL or Telegram file_id.');
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to send this broadcast to all ${broadcastUsersCount || 'registered'} users now?`)) {
+      return;
+    }
+
+    setBroadcastSending(true);
+    setBroadcastResult(null);
+
+    try {
+      let res;
+      if (broadcastMediaType !== 'text' && broadcastMediaSource === 'upload' && broadcastFile) {
+        const formData = new FormData();
+        formData.append('media', broadcastFile);
+        formData.append('mediaType', broadcastMediaType);
+        if (broadcastMessage.trim()) formData.append('message', broadcastMessage.trim());
+        if (broadcastPin) formData.append('pinMessage', 'true');
+        res = await api.sendBroadcast(formData);
+      } else {
+        res = await api.sendBroadcast({
+          mediaType: broadcastMediaType,
+          message: broadcastMessage.trim() || undefined,
+          mediaUrl: (broadcastMediaType !== 'text' && broadcastMediaSource === 'url') ? broadcastMediaUrl.trim() : undefined,
+          pinMessage: broadcastPin
+        });
+      }
+
+      setBroadcastResult({
+        type: 'success',
+        text: res.message,
+        details: { total: res.total, sent: res.sent, failed: res.failed }
+      });
+    } catch (err: any) {
+      setBroadcastResult({
+        type: 'error',
+        text: err.message || 'Failed to send broadcast'
+      });
+    } finally {
+      setBroadcastSending(false);
+    }
+  };
+
+  const handleTestBroadcast = async () => {
+    if (broadcastMediaType === 'text' && !broadcastMessage.trim()) {
+      alert('Please enter a notification message to test.');
+      return;
+    }
+    if (broadcastMediaType !== 'text' && broadcastMediaSource === 'upload' && !broadcastFile) {
+      alert('Please select a media file to upload.');
+      return;
+    }
+    if (broadcastMediaType !== 'text' && broadcastMediaSource === 'url' && !broadcastMediaUrl.trim()) {
+      alert('Please enter a media URL or Telegram file_id.');
+      return;
+    }
+
+    setBroadcastTesting(true);
+    setBroadcastResult(null);
+
+    try {
+      let res;
+      if (broadcastMediaType !== 'text' && broadcastMediaSource === 'upload' && broadcastFile) {
+        const formData = new FormData();
+        formData.append('media', broadcastFile);
+        formData.append('mediaType', broadcastMediaType);
+        if (broadcastMessage.trim()) formData.append('message', broadcastMessage.trim());
+        if (broadcastPin) formData.append('pinMessage', 'true');
+        res = await api.sendTestBroadcast(formData);
+      } else {
+        res = await api.sendTestBroadcast({
+          mediaType: broadcastMediaType,
+          message: broadcastMessage.trim() || undefined,
+          mediaUrl: (broadcastMediaType !== 'text' && broadcastMediaSource === 'url') ? broadcastMediaUrl.trim() : undefined,
+          pinMessage: broadcastPin
+        });
+      }
+
+      setBroadcastResult({
+        type: 'success',
+        text: res.message
+      });
+    } catch (err: any) {
+      setBroadcastResult({
+        type: 'error',
+        text: err.message || 'Test broadcast failed'
+      });
+    } finally {
+      setBroadcastTesting(false);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: MENU
+  // -------------------------------------------------------------
+  if (subView === 'menu') {
+    return (
+      <div className="space-y-4 pb-28">
+        {/* Admin Profile Header Card (Liquid Glass Capsule with 7-Tap Webhook Setup Gesture) */}
+        <div 
+          onClick={handleHeaderSecretTap}
+          title="Admin Profile"
+          className={`glass-panel lg-rise tap rounded-full py-3 sm:py-3.5 px-3.5 sm:px-5 flex items-center justify-between gap-2.5 sm:gap-3 cursor-pointer select-none ${
+            gestureFeedback
+              ? '!border-emerald-400/60 shadow-[0_0_30px_rgba(52,211,153,0.35)]'
+              : ''
+          }`}
+        >
+          <div className="flex items-center gap-3 sm:gap-3.5 min-w-0 flex-1">
+            {/* Dynamic Telegram Profile Photo with Minimalist User Account SVG Fallback */}
+            <div className="w-11 h-11 shrink-0 rounded-full overflow-hidden flex items-center justify-center bg-white/10 border border-white/20 text-white/85 shadow-[0_6px_16px_rgba(0,0,0,0.28)]">
+              {ownerAvatarSrc && !ownerAvatarError ? (
+                <img
+                  src={ownerAvatarSrc}
+                  alt={currentUser.name || 'Admin'}
+                  onError={handleOwnerAvatarError}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <svg
+                  viewBox="0 0 24 24"
+                  className="w-5 h-5 text-white/80"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M20 21a8 8 0 0 0-16 0" />
+                  <circle cx="12" cy="8" r="4" />
+                </svg>
+              )}
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-white truncate">
+                {currentUser.name}
+              </div>
+              <div className="text-xs text-white/55 font-mono mt-0.5 truncate tabular-nums">
+                ID: {currentUser.telegramId}
+              </div>
+            </div>
+          </div>
+
+          <div className="shrink-0 text-right pr-1">
+            <span className={`lg-badge text-[11px] font-bold tracking-wide ${
+              currentUser.role?.toLowerCase() === 'owner' ? 'text-amber-300' : 'text-white/85'
+            }`}>
+              <span className="lg-dot" />
+              {currentUser.role?.toLowerCase() === 'owner' ? 'Owner' : 'Admin'}
+            </span>
+          </div>
+        </div>
+
+        {/* Smooth Animated Admin Details Popup */}
+        {showAdminDetailsPopup && createPortal(
+          <div 
+            className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-black/75 backdrop-blur-md animate-in fade-in duration-200"
+            onClick={() => setShowAdminDetailsPopup(false)}
+          >
+            <div 
+              className="glass-panel w-full max-w-sm max-h-[90dvh] overflow-y-auto overscroll-contain rounded-[24px] p-4 sm:p-5 text-white relative animate-in zoom-in-95 duration-200"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header Title */}
+              <div className="flex items-center justify-between gap-2 pb-3.5 border-b border-white/10">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="lg-tile w-8 h-8 rounded-xl bg-[#7c9cff]/20 flex items-center justify-center text-[#7c9cff] shrink-0">
+                    <ShieldCheck className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-sm font-bold text-white tracking-tight truncate">Admin Details</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdminDetailsPopup(false)}
+                  className="tap w-7 h-7 rounded-lg bg-white/[0.08] hover:bg-white/[0.16] border border-white/10 text-white/70 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Full Telegram Details */}
+              <div className="space-y-3 pt-4">
+                <div className="p-3 rounded-2xl bg-white/[0.05] border border-white/10 space-y-1">
+                  <span className="text-[10px] uppercase font-bold text-white/50 tracking-wider block">Admin ID</span>
+                  <span className="text-sm font-mono font-bold text-white block select-all break-all">{currentUser.telegramId || currentUser.id || 'N/A'}</span>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-white/[0.05] border border-white/10 space-y-1">
+                  <span className="text-[10px] uppercase font-bold text-white/50 tracking-wider block">Username</span>
+                  <span className="text-sm font-mono font-bold text-[#7c9cff] block select-all break-all">
+                    {currentUser.username ? (currentUser.username.startsWith('@') ? currentUser.username : `@${currentUser.username}`) : `@${(currentUser.name || 'admin').toLowerCase().replace(/\s+/g, '_')}`}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-white/[0.05] border border-white/10 space-y-1">
+                  <span className="text-[10px] uppercase font-bold text-white/50 tracking-wider block">Role</span>
+                  <span className="text-xs font-bold text-amber-300 block uppercase tracking-wide">
+                    {currentUser.role === 'owner' ? 'Owner / Super Administrator' : 'Administrator'}
+                  </span>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-white/[0.05] border border-white/10 space-y-1">
+                  <span className="text-[10px] uppercase font-bold text-white/50 tracking-wider block">Credentials</span>
+                  <span className="text-xs font-mono text-white/75 block break-all">
+                    Authorized Session Token ({currentUser.role || 'admin'})
+                  </span>
+                </div>
+              </div>
+
+              <div className="pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAdminDetailsPopup(false)}
+                  className="tap w-full py-2.5 px-4 rounded-xl bg-white/[0.1] hover:bg-white/[0.18] border border-white/15 text-white font-bold text-xs transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Menu Items */}
+        <div className="glass-panel lg-rise rounded-[24px] divide-y divide-white/10 overflow-hidden">
+          {/* Switch Bot & Fleet Management (Main Panel Only) */}
+          {onOpenBotSwitcher && (
+            <button
+              onClick={() => onOpenBotSwitcher()}
+              className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer bg-white/[0.02]"
+            >
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div
+                  className="lg-tile shrink-0"
+                  style={{
+                    background: 'color-mix(in srgb, var(--a) 24%, rgba(255,255,255,.06))',
+                    '--c': 'rgba(124,156,255,0.45)',
+                  } as React.CSSProperties}
+                >
+                  <Bot className="w-4 h-4 text-sky-300" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                    <span>Switch Bot &amp; Fleet Manager</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-sky-200 font-semibold border border-white/20">
+                      Multi-Bot
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+            </button>
+          )}
+
+          {/* Templates */}
+          <button
+            onClick={() => setSubView('templates')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #60a5fa 20%, rgba(255,255,255,.06))' }}>
+                <MessageSquare className="w-4 h-4 text-sky-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white truncate">Message Templates</div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Admins */}
+          <button
+            onClick={() => setSubView('admins')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #818cf8 20%, rgba(255,255,255,.06))' }}>
+                <Users className="w-4 h-4 text-indigo-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white truncate">Sub-Admins &amp; Permissions</div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Bot Settings */}
+          <button
+            onClick={() => setSubView('settings')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #fbbf24 20%, rgba(255,255,255,.06))' }}>
+                <Settings className="w-4 h-4 text-amber-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white truncate">Bot Settings</div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Sub Force */}
+          <button
+            onClick={() => setSubView('sub_force')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #6366f1 22%, rgba(255,255,255,.06))' }}>
+                <Radio className="w-4 h-4 text-indigo-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Sub Force</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono font-semibold tabular-nums border ${
+                    botSettings.forceSubEnabled
+                      ? 'bg-indigo-500/20 text-indigo-200 border-indigo-400/30'
+                      : 'bg-white/10 text-white/70 border-white/15'
+                  }`}>
+                    {botSettings.forceSubEnabled
+                      ? `${(botSettings.requiredChannels || []).filter((c: any) => c.enabled !== false).length} Active`
+                      : 'Off'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Group Management */}
+          <button
+            onClick={() => setSubView('group_management')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #38bdf8 22%, rgba(255,255,255,.06))' }}>
+                <ShieldCheck className="w-4 h-4 text-sky-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Group Management</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-sky-500/20 text-sky-200 font-mono font-semibold tabular-nums border border-sky-400/25">
+                    {[
+                      Boolean(botSettings.linkDeleteEnabled),
+                      Boolean(botSettings.antiForwardEnabled),
+                      botSettings.banEnabled !== false,
+                      botSettings.muteEnabled !== false
+                    ].filter(Boolean).length}/4 Active
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Broadcast Notification System */}
+          <button
+            onClick={() => setSubView('broadcast')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #c084fc 22%, rgba(255,255,255,.06))' }}>
+                <Megaphone className="w-4 h-4 text-purple-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Broadcast System</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-purple-500/20 text-purple-200 font-mono font-semibold border border-purple-400/25">
+                    {broadcastUsersCount > 0 ? `${broadcastUsersCount} Users` : 'Rich Media'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* User Reports & Moderation */}
+          <button
+            onClick={() => setSubView('reports')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #fb7185 20%, rgba(255,255,255,.06))' }}>
+                <Flag className="w-4 h-4 text-rose-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>User Reports</span>
+                  {reportsList.filter(r => r.status === 'pending').length > 0 ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-500/30 text-rose-200 font-mono font-semibold animate-pulse">
+                      {reportsList.filter(r => r.status === 'pending').length} Pending
+                    </span>
+                  ) : (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-white/70 font-mono">
+                      {reportsList.length} Total
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Fraud Protection & Word Filter */}
+          <button
+            onClick={() => setSubView('fraud')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #fbbf24 20%, rgba(255,255,255,.06))' }}>
+                <ShieldAlert className="w-4 h-4 text-amber-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Fraud &amp; Word Filter</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-200 font-mono font-semibold border border-amber-400/25">
+                    {fraudRulesList.filter(r => r.enabled).length} Active Rules
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Chat Ignore / Whitelist */}
+          <button
+            onClick={() => setSubView('whitelist')}
+            className="tap w-full p-4 flex items-center justify-between hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #34d3ee 20%, rgba(255,255,255,.06))' }}>
+                <VolumeX className="w-4 h-4 text-cyan-300" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Chat Ignore / Whitelist</span>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono font-semibold tabular-nums ${
+                      chatWhitelistEnabled
+                        ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/25'
+                        : 'bg-white/10 text-white/70'
+                    }`}
+                  >
+                    {chatWhitelistEnabled ? `Strict · ${allowedChats.length}` : `${allowedChats.length} Saved`}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Key Generator */}
+          <button
+            onClick={() => setSubView('key_generator')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #10b981 20%, rgba(255,255,255,.06))' }}>
+                <Key className="w-4 h-4 text-emerald-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Key Generator</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-200 font-mono font-semibold border border-emerald-400/25 tabular-nums">
+                    {keyPoolsList.length} Links
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+
+          {/* Emoji Store */}
+          <button
+            onClick={() => setSubView('emoji')}
+            className="tap w-full p-3.5 sm:p-4 flex items-center justify-between gap-2.5 hover:bg-white/[0.06] text-left transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="lg-tile shrink-0" style={{ background: 'color-mix(in srgb, #f472b6 20%, rgba(255,255,255,.06))' }}>
+                <Smile className="w-4 h-4 text-pink-300" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Emoji Store</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-pink-500/20 text-pink-200 font-mono font-semibold">
+                    Hot
+                  </span>
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/50 shrink-0" />
+          </button>
+        </div>
+
+        {/* Logout */}
+        <button
+          onClick={onLogout}
+          className="glass tap lg-rise w-full p-3.5 rounded-[20px] border-rose-400/25 text-rose-300 hover:bg-rose-500/15 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+        >
+          <LogOut className="w-4 h-4" />
+          <span>Sign Out of Admin Portal</span>
+        </button>
+      </div>
+    );
+  }
+
+  const renderSubViewBackButton = (targetView: MoreSubView = 'menu', label: string = 'Back to More') => (
+    <button
+      type="button"
+      onClick={() => setSubView(targetView)}
+      aria-label={label}
+      className="glass tap p-2 rounded-xl text-white/80 hover:text-white shrink-0"
+    >
+      <ChevronRight className="w-4 h-4 rotate-180" />
+    </button>
+  );
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: EMOJI STORE
+  // -------------------------------------------------------------
+  if (subView === 'emoji') {
+    return <EmojiStore onBack={() => setSubView('menu')} />;
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: MESSAGE TEMPLATES (Sections 31-34)
+  // -------------------------------------------------------------
+  if (subView === 'templates') {
+    const startTemplate = templates.START_MESSAGE;
+    const otherTemplates = Object.values(templates).filter((t) => t.key !== 'START_MESSAGE' && t.key !== 'WEB_CODE_MESSAGE');
+
+    return (
+      <div className="space-y-4 pb-28">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <h2 className="text-base font-bold text-white truncate">Message Templates</h2>
+          </div>
+          <span className="text-xs text-zinc-400 shrink-0">Live Bot Messages</span>
+        </div>
+
+        {/* Featured: Start Message Template (/start) */}
+        {startTemplate && (
+          <div className="p-4 rounded-2xl bg-gradient-to-br from-sky-500/15 via-indigo-500/10 to-zinc-900 border border-red-500/40 shadow-lg space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-500/20 text-sky-300 border border-red-500/30">
+                    /start Command
+                  </span>
+                  <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Active
+                  </span>
+                </div>
+                <h3 className="text-sm font-bold text-white break-words">{startTemplate.name}</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setEditingTemplate(startTemplate);
+                  setTemplateContent(startTemplate.content);
+                  setTemplateMediaType(startTemplate.mediaType || 'none');
+                  setTemplateMediaUrl(startTemplate.mediaUrl || '');
+                }}
+                className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-sm"
+              >
+                <Edit2 className="w-3.5 h-3.5" />
+                <span>Edit /start Msg</span>
+              </button>
+            </div>
+
+            <div
+              data-no-tab-swipe="true"
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 text-xs font-mono text-zinc-200 whitespace-pre-wrap break-words overflow-x-auto"
+            >
+              {startTemplate.content}
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-zinc-400 pt-0.5">
+              <span className="text-zinc-500 font-medium">Placeholders:</span>
+              {(startTemplate.variables || ['user_name', 'user_id', 'bot_name']).map((v) => (
+                <span key={v} className="bg-zinc-800 border border-zinc-700/60 px-1.5 py-0.5 rounded text-red-400 font-mono">
+                  {`{${v}}`}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="text-xs font-semibold text-zinc-400 px-1 pt-2">
+          Other Bot Templates
+        </div>
+
+        <div className="space-y-2.5">
+          {(otherTemplates.length > 0 ? otherTemplates : Object.values(templates)).map((tpl) => (
+            <div
+              key={tpl.key}
+              className="glass-panel rounded-2xl p-4 border border-zinc-800/80 hover:border-zinc-700/80 transition-all space-y-2"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-xs font-bold text-white break-words">{tpl.name}</h4>
+                </div>
+                <button
+                  onClick={() => {
+                    setEditingTemplate(tpl);
+                    setTemplateContent(tpl.content);
+                    setTemplateMediaType(tpl.mediaType || 'none');
+                    setTemplateMediaUrl(tpl.mediaUrl || '');
+                  }}
+                  className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-red-400 cursor-pointer shrink-0"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Template Content Box */}
+              <div
+                data-no-tab-swipe="true"
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+                className="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800 text-xs font-mono text-zinc-200 whitespace-pre-wrap break-words overflow-x-auto"
+              >
+                {tpl.content}
+              </div>
+
+              {/* Variables */}
+              {tpl.variables?.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-zinc-400 pt-1">
+                  <span>Variables:</span>
+                  {tpl.variables.map((v) => (
+                    <span key={v} className="bg-zinc-800 px-1.5 py-0.5 rounded text-red-400 font-mono">
+                      {`{${v}}`}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {renderTemplateEditModal()}
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: ADMINS & PERMISSIONS (Section 19 & 42)
+  // -------------------------------------------------------------
+  if (subView === 'admins') {
+    const categories = ['Files & Media', 'Links & Web', 'Bot Messages', 'System Control'];
+
+    return (
+      <div className="space-y-4 pb-28">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <h2 className="text-base font-bold text-white truncate">Sub-Admins</h2>
+          </div>
+          {currentUser.role === 'owner' && (
+            <button
+              onClick={() => setShowAddAdmin(true)}
+              className="py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/30 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Sub-Admin</span>
+            </button>
+          )}
+        </div>
+
+        {/* Info Banner */}
+        <div className="p-3.5 rounded-2xl bg-zinc-900/80 border border-zinc-800 text-xs text-zinc-300 flex items-start gap-2.5">
+          <Shield className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+          <div className="text-[11px] leading-relaxed text-zinc-400">
+            <span className="font-semibold text-zinc-200">Owner Access Control:</span> As the Owner/Master Admin, you have full authority to grant or revoke any of the 14 granular capabilities for each sub-admin, issue signed session tokens, toggle account access, or reset passwords.
+          </div>
+        </div>
+
+        {/* Newly Minted Access Token Display */}
+        {mintedAdminToken && (
+          <div className="p-3.5 rounded-2xl bg-sky-500/10 border border-sky-500/35 text-xs space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-bold text-sky-300">
+                <Key className="w-4 h-4 shrink-0" />
+                <span>Session Access Token for {mintedAdminToken.name}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMintedAdminToken(null)}
+                className="text-zinc-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2 bg-black/50 border border-white/10 rounded-xl px-2.5 py-2">
+              <code className="font-mono text-[11px] text-sky-200 truncate">{mintedAdminToken.token}</code>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(mintedAdminToken.token).then(() => toast.success('Token copied!')).catch(() => {});
+                }}
+                className="px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 text-[10px] font-bold flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <Copy className="w-3 h-3" />
+                <span>Copy</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {adminsLoading ? (
+          <div className="p-8 text-center text-xs text-zinc-500 flex flex-col items-center justify-center gap-2">
+            <Loader2 className="w-5 h-5 animate-spin text-red-400" />
+            <span>Loading admin accounts...</span>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {adminsList.map((adm) => {
+              const activePermCount = ALL_PERMISSIONS.filter(p => adm.role === 'owner' || adm.permissions?.[p.key]).length;
+              const isOwner = adm.role === 'owner';
+              const isEnabled = adm.enabled !== false;
+
+              return (
+                <div
+                  key={adm.id}
+                  className={`glass-panel rounded-2xl p-4 border transition-all space-y-3 ${
+                    !isEnabled 
+                      ? 'border-rose-900/30 bg-rose-950/10 opacity-75' 
+                      : isOwner
+                      ? 'border-amber-500/30 bg-amber-950/5'
+                      : 'border-zinc-800/90'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-white flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                        <span className="break-words">{adm.name}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-semibold uppercase ${
+                          isOwner 
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
+                            : 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                        }`}>
+                          {adm.role}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-semibold ${
+                          isEnabled
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                        }`}>
+                          {isEnabled ? '● Active' : '○ Disabled'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-zinc-400 font-mono mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="break-all">Telegram ID: <span className="text-zinc-200 font-semibold">{adm.telegramId}</span></span>
+                        {adm.lastLoginAt && (
+                          <span className="text-zinc-500 text-[10px]">
+                            • Last active {new Date(adm.lastLoginAt).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {currentUser.role === 'owner' && !isOwner && (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* Generate Signed Session Access Token */}
+                        <button
+                          type="button"
+                          onClick={() => handleGenerateAdminToken(adm)}
+                          disabled={!isEnabled || mintingTokenId === adm.id}
+                          title="Issue signed session access token"
+                          className="p-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 cursor-pointer transition-colors disabled:opacity-40"
+                        >
+                          {mintingTokenId === adm.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Key className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+
+                        {/* Toggle enabled/disabled */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAdminStatus(adm)}
+                          title={isEnabled ? 'Disable sub-admin' : 'Enable sub-admin'}
+                          className={`p-1.5 rounded-xl border text-xs cursor-pointer transition-colors ${
+                            isEnabled
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                              : 'bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20'
+                          }`}
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Edit Permissions */}
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditAdmin(adm)}
+                          title="Edit sub-admin permissions & password"
+                          className="p-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 cursor-pointer transition-colors"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Delete */}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAdmin(adm.id)}
+                          title="Remove sub-admin"
+                          className="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/25 text-rose-400 border border-rose-500/20 cursor-pointer transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Permissions Granted Progress & Tags */}
+                  <div className="pt-2 border-t border-zinc-800/80 space-y-2">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-400 font-medium">Permissions Granted:</span>
+                      <span className="font-mono text-zinc-300 font-semibold">
+                        {isOwner ? '14 / 14 (Full Master Access)' : `${activePermCount} / 14 Allowed`}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1">
+                      {ALL_PERMISSIONS.map(p => {
+                        const isGranted = isOwner || Boolean(adm.permissions?.[p.key]);
+                        return (
+                          <span
+                            key={p.key}
+                            className={`text-[10px] px-2 py-0.5 rounded-md font-mono transition-colors ${
+                              isGranted
+                                ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30 font-medium'
+                                : 'bg-zinc-900/60 text-zinc-600 border border-zinc-800 line-through'
+                            }`}
+                          >
+                            {isGranted ? '✓ ' : '✕ '}{p.label}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Add Sub Admin Modal */}
+        {showAddAdmin && createPortal(
+          <div
+            onClick={() => setShowAddAdmin(false)}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-black/85 backdrop-blur-md overflow-y-auto overscroll-contain animate-in fade-in duration-200"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="glass-panel w-full max-w-lg max-h-[90dvh] overflow-y-auto overscroll-contain rounded-3xl p-4 sm:p-5 border border-sky-500/35 shadow-[0_0_50px_-10px_rgba(14,165,233,0.35),0_25px_50px_-12px_rgba(0,0,0,0.95)] space-y-4 my-auto relative animate-in zoom-in-95 duration-200"
+            >
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <div className="w-9 h-9 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center shrink-0">
+                    <Plus className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="font-bold text-white text-sm truncate">Add New Sub-Admin</h4>
+                    <p className="text-[11px] text-zinc-400 truncate">Configure credentials & granular permissions</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowAddAdmin(false)}
+                  className="w-8 h-8 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateAdmin} className="space-y-4">
+                {botUsersForAdmin.filter((u) => !u.isAdmin && !u.isBanned).length > 0 && (
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                      Quick Select Bot User <span className="text-zinc-500 font-normal">(optional)</span>
+                    </label>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const selected = botUsersForAdmin.find((u) => String(u.id) === e.target.value);
+                        if (selected) {
+                          const display = [selected.firstName, selected.lastName].filter(Boolean).join(' ').trim() || selected.username || `User ${selected.id}`;
+                          setNewAdminData((prev) => ({
+                            ...prev,
+                            name: display,
+                            telegramId: String(selected.id),
+                          }));
+                        }
+                      }}
+                      className="w-full bg-[#101018] border border-zinc-700 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">-- Pick a tracked Telegram user --</option>
+                      {botUsersForAdmin
+                        .filter((u) => !u.isAdmin && !u.isBanned)
+                        .map((u) => {
+                          const label = [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.username || u.id;
+                          return (
+                            <option key={u.id} value={u.id}>
+                              {label} {u.username ? `(@${u.username.replace(/^@/, '')})` : ''} — ID: {u.id}
+                            </option>
+                          );
+                        })}
+                    </select>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-300 mb-1">Display Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={newAdminData.name}
+                      onChange={(e) => setNewAdminData({ ...newAdminData, name: e.target.value })}
+                      placeholder="e.g. Moderator Alex"
+                      className="w-full bg-[#101018] border border-zinc-700 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-300 mb-1">Telegram User ID</label>
+                    <input
+                      type="text"
+                      required
+                      value={newAdminData.telegramId}
+                      onChange={(e) => setNewAdminData({ ...newAdminData, telegramId: e.target.value })}
+                      placeholder="e.g. 8153757163"
+                      className="w-full bg-[#101018] border border-zinc-700 rounded-xl p-2.5 text-xs text-white font-mono focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-300 mb-1">Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={newAdminData.password}
+                    onChange={(e) => setNewAdminData({ ...newAdminData, password: e.target.value })}
+                    placeholder="Min 6 characters"
+                    className="w-full bg-[#101018] border border-zinc-700 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+
+                {/* Permissions Toggles with Select All / Deselect All */}
+                <div className="pt-2 border-t border-zinc-800 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white text-xs">Granular Permissions (14 Capabilities)</div>
+                      <div className="text-[10px] text-zinc-400">Toggle exactly what this sub-admin is allowed to do</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allTrue: Record<string, boolean> = {};
+                          ALL_PERMISSIONS.forEach(p => { allTrue[p.key] = true; });
+                          setNewAdminData({ ...newAdminData, permissions: allTrue as any });
+                        }}
+                        className="text-[10px] px-2 py-0.5 rounded-md bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 cursor-pointer font-medium"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allFalse: Record<string, boolean> = {};
+                          ALL_PERMISSIONS.forEach(p => { allFalse[p.key] = false; });
+                          setNewAdminData({ ...newAdminData, permissions: allFalse as any });
+                        }}
+                        className="text-[10px] px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700 cursor-pointer font-medium"
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                    {categories.map(cat => {
+                      const permsInCat = ALL_PERMISSIONS.filter(p => p.category === cat);
+                      return (
+                        <div key={cat} className="p-3 rounded-2xl bg-zinc-950/60 border border-zinc-800/80 space-y-2">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                            {cat}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {permsInCat.map(p => {
+                              const isChecked = Boolean(newAdminData.permissions[p.key]);
+                              return (
+                                <label
+                                  key={p.key}
+                                  className={`p-2 rounded-xl border flex items-start gap-2 cursor-pointer transition-colors ${
+                                    isChecked
+                                      ? 'bg-sky-500/10 border-sky-500/40 text-white'
+                                      : 'bg-zinc-900/60 border-zinc-800/80 text-zinc-400 hover:bg-zinc-800/50'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) =>
+                                      setNewAdminData({
+                                        ...newAdminData,
+                                        permissions: { ...newAdminData.permissions, [p.key]: e.target.checked }
+                                      })
+                                    }
+                                    className="mt-0.5 rounded accent-sky-500 shrink-0 cursor-pointer"
+                                  />
+                                  <div className="text-left">
+                                    <div className="text-xs font-semibold leading-tight">{p.label}</div>
+                                    <div className="text-[10px] text-zinc-400 leading-tight mt-0.5">{p.desc}</div>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddAdmin(false)}
+                    className="flex-1 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold cursor-pointer transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold cursor-pointer shadow-md shadow-blue-600/30 transition-all active:scale-95"
+                  >
+                    Create Sub-Admin
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Edit Sub Admin Modal */}
+        {editingAdmin && createPortal(
+          <div
+            onClick={() => setEditingAdmin(null)}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-black/85 backdrop-blur-md overflow-y-auto overscroll-contain animate-in fade-in duration-200"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="glass-panel w-full max-w-lg max-h-[90dvh] overflow-y-auto overscroll-contain rounded-3xl p-4 sm:p-5 border border-blue-500/35 shadow-[0_0_50px_-10px_rgba(59,130,246,0.35),0_25px_50px_-12px_rgba(0,0,0,0.95)] space-y-4 my-auto relative animate-in zoom-in-95 duration-200"
+            >
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <div className="w-9 h-9 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center shrink-0">
+                    <Edit2 className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="font-bold text-white text-sm truncate">Edit Sub-Admin</h4>
+                    <p className="text-[11px] text-zinc-400 truncate">Telegram ID: {editingAdmin.telegramId}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setEditingAdmin(null)}
+                  className="w-8 h-8 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleUpdateAdmin} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-300 mb-1">Display Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={editAdminForm.name}
+                      onChange={(e) => setEditAdminForm({ ...editAdminForm, name: e.target.value })}
+                      className="w-full bg-[#101018] border border-zinc-700 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                      Account Status
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setEditAdminForm({ ...editAdminForm, enabled: !editAdminForm.enabled })}
+                      className={`w-full p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors ${
+                        editAdminForm.enabled
+                          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25'
+                          : 'bg-rose-500/15 border-rose-500/30 text-rose-300 hover:bg-rose-500/25'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>{editAdminForm.enabled ? 'Account Active' : 'Account Disabled'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-zinc-300">Reset Password</label>
+                    <span className="text-[10px] text-zinc-500">Leave blank to keep existing password</span>
+                  </div>
+                  <input
+                    type="password"
+                    value={editAdminForm.password}
+                    onChange={(e) => setEditAdminForm({ ...editAdminForm, password: e.target.value })}
+                    placeholder="Enter new password (optional)"
+                    className="w-full bg-[#101018] border border-zinc-700 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {/* Permissions Toggles with Select All / Deselect All */}
+                <div className="pt-2 border-t border-zinc-800 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white text-xs">Granular Permissions (14 Capabilities)</div>
+                      <div className="text-[10px] text-zinc-400">Toggle permissions individually without restrictions</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allTrue: Record<string, boolean> = {};
+                          ALL_PERMISSIONS.forEach(p => { allTrue[p.key] = true; });
+                          setEditAdminForm({ ...editAdminForm, permissions: allTrue });
+                        }}
+                        className="text-[10px] px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 cursor-pointer font-medium"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allFalse: Record<string, boolean> = {};
+                          ALL_PERMISSIONS.forEach(p => { allFalse[p.key] = false; });
+                          setEditAdminForm({ ...editAdminForm, permissions: allFalse });
+                        }}
+                        className="text-[10px] px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700 cursor-pointer font-medium"
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                    {categories.map(cat => {
+                      const permsInCat = ALL_PERMISSIONS.filter(p => p.category === cat);
+                      return (
+                        <div key={cat} className="p-3 rounded-2xl bg-zinc-950/60 border border-zinc-800/80 space-y-2">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                            {cat}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {permsInCat.map(p => {
+                              const isChecked = Boolean(editAdminForm.permissions[p.key]);
+                              return (
+                                <label
+                                  key={p.key}
+                                  className={`p-2 rounded-xl border flex items-start gap-2 cursor-pointer transition-colors ${
+                                    isChecked
+                                      ? 'bg-blue-500/10 border-blue-500/40 text-white'
+                                      : 'bg-zinc-900/60 border-zinc-800/80 text-zinc-400 hover:bg-zinc-800/50'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) =>
+                                      setEditAdminForm({
+                                        ...editAdminForm,
+                                        permissions: { ...editAdminForm.permissions, [p.key]: e.target.checked }
+                                      })
+                                    }
+                                    className="mt-0.5 rounded accent-blue-500 shrink-0 cursor-pointer"
+                                  />
+                                  <div className="text-left">
+                                    <div className="text-xs font-semibold leading-tight">{p.label}</div>
+                                    <div className="text-[10px] text-zinc-400 leading-tight mt-0.5">{p.desc}</div>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingAdmin(null)}
+                    className="flex-1 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold cursor-pointer transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingAdmin}
+                    className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold cursor-pointer shadow-md shadow-blue-600/30 transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    {savingAdmin ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <span>Save Changes</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: SETTINGS & BOT (Independent Self-Contained Cards)
+  // -------------------------------------------------------------
+  if (subView === 'settings') {
+    return (
+      <div className="space-y-4 pb-28">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <h2 className="text-base font-bold text-white truncate">Bot Settings</h2>
+          </div>
+          <span className="text-xs text-zinc-400 shrink-0">Runtime &amp; Controls</span>
+        </div>
+
+        {botStatusMsg && (
+          <div
+            className={`p-3 rounded-xl text-xs flex items-start gap-2 ${
+              botStatusMsg.type === 'success'
+                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-300'
+                : 'bg-rose-500/10 border border-rose-500/20 text-rose-300'
+            }`}
+          >
+            {botStatusMsg.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            )}
+            <span>{botStatusMsg.text}</span>
+          </div>
+        )}
+
+        {/* 1. Bot Process & Memory Control Card */}
+        <div className="glass-panel rounded-2xl p-4 border border-zinc-800 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
+                botRuntimeStatus === 'stopped'
+                  ? 'bg-rose-500/15 border-rose-500/30 text-rose-400'
+                  : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
+              }`}>
+                <Bot className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-2">
+                  <span>Bot Process &amp; Memory Control</span>
+                </div>
+                <div className="text-[11px] text-zinc-400 flex items-center gap-1.5 mt-0.5">
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    botRuntimeStatus === 'stopped' ? 'bg-rose-400' : 'bg-emerald-400 animate-pulse'
+                  }`} />
+                  <span className={botRuntimeStatus === 'stopped' ? 'text-rose-300 font-semibold' : 'text-emerald-300 font-semibold'}>
+                    {botRuntimeStatus === 'stopped' ? 'Stopped' : botRuntimePolling ? 'Running (Polling Active)' : 'Running'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={loadBotRuntimeStatus}
+              className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+              title="Refresh runtime status"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <button
+              type="button"
+              disabled={botLifecycleBusy !== null || botRuntimeStatus === 'active'}
+              onClick={() => handleBotLifecycleAction('start')}
+              className="min-w-0 py-2 px-2 sm:px-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {botLifecycleBusy === 'start' ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <Play className="w-3.5 h-3.5 shrink-0" />}
+              <span className="truncate">Start Bot</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={botLifecycleBusy !== null || botRuntimeStatus === 'stopped'}
+              onClick={() => handleBotLifecycleAction('stop')}
+              className="min-w-0 py-2 px-2 sm:px-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {botLifecycleBusy === 'stop' ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <Square className="w-3.5 h-3.5 shrink-0" />}
+              <span className="truncate">Stop Bot</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={botLifecycleBusy !== null}
+              onClick={() => handleBotLifecycleAction('restart')}
+              className="min-w-0 py-2 px-2 sm:px-3 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/30 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-40"
+            >
+              {botLifecycleBusy === 'restart' ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <RotateCcw className="w-3.5 h-3.5 shrink-0" />}
+              <span className="truncate">Restart</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={botLifecycleBusy !== null}
+              onClick={() => handleBotLifecycleAction('clean-memory')}
+              className="min-w-0 py-2 px-2 sm:px-3 rounded-xl bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-40"
+            >
+              {botLifecycleBusy === 'clean-memory' ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <Sparkles className="w-3.5 h-3.5 shrink-0" />}
+              <span className="truncate">Clean Memory</span>
+            </button>
+          </div>
+
+          {lastMemCleanNote && (
+            <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-1.5 font-mono">
+              {lastMemCleanNote}
+            </div>
+          )}
+        </div>
+
+        {/* 2. Delivery File Auto-Delete Card (Independent) */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-rose-950/20 via-zinc-900/80 to-zinc-950/90 border border-rose-500/30 space-y-3">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <div className="w-8 h-8 rounded-xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                <Clock className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white break-words">Delivery File Auto-Delete (Timeout)</div>
+              </div>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={Boolean(botSettings.autoDeleteDeliveryEnabled)}
+                onChange={async (e) => {
+                  const nextEnabled = e.target.checked;
+                  const prevEnabled = Boolean(botSettings.autoDeleteDeliveryEnabled);
+                  setBotSettings((prev: any) => ({ ...prev, autoDeleteDeliveryEnabled: nextEnabled }));
+                  await savePartialBotSetting(
+                    'autoDelete',
+                    { autoDeleteDeliveryEnabled: nextEnabled },
+                    nextEnabled ? 'File auto-delete enabled' : 'File auto-delete disabled',
+                    () => setBotSettings((prev: any) => ({ ...prev, autoDeleteDeliveryEnabled: prevEnabled }))
+                  );
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-rose-500"></div>
+            </label>
+          </div>
+
+          {botSettings.autoDeleteDeliveryEnabled && (
+            <div className="space-y-3 pt-2 border-t border-rose-500/20 text-xs">
+              {/* Quick Preset Buttons */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-semibold text-zinc-300">Quick Duration Presets:</span>
+                  <span className="text-rose-400 font-mono font-bold">
+                    {botSettings.deliveryTimeoutMinutes || 10} min
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                  {[1, 3, 5, 10, 15, 30, 60, 120].map((presetMins) => {
+                    const isSelected = (botSettings.deliveryTimeoutMinutes || 10) === presetMins;
+                    return (
+                      <button
+                        key={presetMins}
+                        type="button"
+                        disabled={savingSection === 'autoDelete'}
+                        onClick={() => handleUpdateDeliveryTimeout(presetMins)}
+                        className={`py-1.5 px-2 rounded-xl text-xs font-semibold font-mono flex items-center justify-center transition-all cursor-pointer disabled:opacity-60 ${
+                          isSelected
+                            ? 'bg-rose-500 text-white shadow-md shadow-rose-500/30 ring-1 ring-white/30 scale-102 font-bold'
+                            : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800'
+                        }`}
+                      >
+                        {presetMins}m
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                  Custom Duration (Minutes)
+                </label>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={savingSection === 'autoDelete'}
+                    onClick={() => {
+                      const cur = botSettings.deliveryTimeoutMinutes || 10;
+                      handleUpdateDeliveryTimeout(Math.max(1, cur - 1));
+                    }}
+                    className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer disabled:opacity-60"
+                    title="Decrease 1 minute"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+
+                  <input
+                    type="number"
+                    min="1"
+                    max="10080"
+                    value={botSettings.deliveryTimeoutMinutes}
+                    onChange={(e) => setBotSettings((prev: any) => ({ ...prev, deliveryTimeoutMinutes: Math.max(1, Number(e.target.value) || 1) }))}
+                    placeholder="e.g. 10"
+                    className="w-24 bg-zinc-950 border border-zinc-700 rounded-xl py-1.5 px-3 text-xs text-white font-mono font-bold text-center focus:outline-none focus:border-rose-400"
+                  />
+
+                  <button
+                    type="button"
+                    disabled={savingSection === 'autoDelete'}
+                    onClick={() => {
+                      const cur = botSettings.deliveryTimeoutMinutes || 10;
+                      handleUpdateDeliveryTimeout(cur + 1);
+                    }}
+                    className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer disabled:opacity-60"
+                    title="Increase 1 minute"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+
+                  <span className="text-rose-400 font-semibold text-xs ml-1">Minutes</span>
+
+                  <button
+                    type="button"
+                    disabled={savingSection === 'autoDelete'}
+                    onClick={() => handleUpdateDeliveryTimeout(botSettings.deliveryTimeoutMinutes || 10)}
+                    className="ml-auto px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{savingSection === 'autoDelete' ? 'Saving...' : 'Save Timer'}</span>
+                  </button>
+                </div>
+                <span className="text-[10px] text-zinc-400 block mt-1">
+                  Files will remain accessible for exactly {botSettings.deliveryTimeoutMinutes || 10} minute(s) before self-destructing.
+                </span>
+              </div>
+
+              <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer pt-2 border-t border-zinc-800/80">
+                <input
+                  type="checkbox"
+                  checked={Boolean(botSettings.autoDeleteNoticeEnabled)}
+                  onChange={async (e) => {
+                    const nextNotice = e.target.checked;
+                    const prevNotice = Boolean(botSettings.autoDeleteNoticeEnabled);
+                    setBotSettings((prev: any) => ({ ...prev, autoDeleteNoticeEnabled: nextNotice }));
+                    await savePartialBotSetting(
+                      'autoDelete',
+                      { autoDeleteNoticeEnabled: nextNotice },
+                      nextNotice ? 'Auto-delete notice enabled' : 'Auto-delete notice disabled',
+                      () => setBotSettings((prev: any) => ({ ...prev, autoDeleteNoticeEnabled: prevNotice }))
+                    );
+                  }}
+                  className="rounded accent-rose-500"
+                />
+                <span>Send companion self-destruct warning notice message with the file</span>
+              </label>
+            </div>
+          )}
+        </div>
+
+        {/* 3. Bot Maintenance Mode Card (Independent) */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-amber-950/25 via-zinc-900/80 to-zinc-950/90 border border-amber-500/30 space-y-3">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <Shield className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Bot Maintenance Mode</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${
+                    botSettings.maintenanceMode 
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
+                      : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                  }`}>
+                    {botSettings.maintenanceMode ? 'ACTIVE (OFFLINE)' : 'ONLINE'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={Boolean(botSettings.maintenanceMode)}
+                onChange={async (e) => {
+                  const nextMode = e.target.checked;
+                  const prevMode = Boolean(botSettings.maintenanceMode);
+                  setBotSettings((prev: any) => ({ ...prev, maintenanceMode: nextMode }));
+                  await savePartialBotSetting(
+                    'maintenance',
+                    { maintenanceMode: nextMode },
+                    nextMode ? 'Bot Maintenance Mode activated' : 'Bot is now ONLINE',
+                    () => setBotSettings((prev: any) => ({ ...prev, maintenanceMode: prevMode }))
+                  );
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+            </label>
+          </div>
+
+          {/* Maintenance Notice Customization Input with Dynamic Variable Support */}
+          <div className="pt-2 border-t border-amber-500/20 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-semibold text-zinc-300">
+                Maintenance Notice
+              </label>
+              <span className="text-[10px] text-amber-400 font-mono">Dynamic Tags</span>
+            </div>
+            <textarea
+              ref={maintenanceTextareaRef}
+              rows={2}
+              value={botSettings.maintenanceNotice || ''}
+              onChange={(e) => {
+                setBotSettings((prev: any) => ({ ...prev, maintenanceNotice: e.target.value }));
+                syncTextareaSelection(e.currentTarget, maintenanceSelectionRef);
+              }}
+              onSelect={(e) => syncTextareaSelection(e.currentTarget, maintenanceSelectionRef)}
+              onKeyUp={(e) => syncTextareaSelection(e.currentTarget, maintenanceSelectionRef)}
+              onClick={(e) => syncTextareaSelection(e.currentTarget, maintenanceSelectionRef)}
+              onBlur={(e) => syncTextareaSelection(e.currentTarget, maintenanceSelectionRef)}
+              placeholder="e.g. ⚠️ Hello @username! {bot_name} is under maintenance. User ID: {user_id}"
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl p-2.5 text-xs text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-amber-500"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {[
+                  { tag: '@username', label: '@username' },
+                  { tag: '{user_id}', label: '{user_id}' },
+                  { tag: '{bot_name}', label: '{bot_name}' },
+                  { tag: '{name}', label: '{name}' },
+                ].map(({ tag, label }) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      const current = botSettings.maintenanceNotice || '';
+                      insertAtCursor(
+                        maintenanceTextareaRef.current,
+                        current,
+                        tag,
+                        (nextVal) =>
+                          setBotSettings((prev: any) =>
+                            prev ? { ...prev, maintenanceNotice: nextVal } : prev
+                          ),
+                        maintenanceSelectionRef
+                      );
+                    }}
+                    className="px-2 py-0.5 rounded-md bg-zinc-800/90 hover:bg-zinc-700 border border-zinc-700/80 text-[10px] font-mono text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                    title={`Click to insert ${tag}`}
+                  >
+                    +{label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                disabled={savingSection === 'maintenance'}
+                onClick={() =>
+                  savePartialBotSetting(
+                    'maintenance',
+                    { maintenanceNotice: String(botSettings.maintenanceNotice || '') },
+                    'Maintenance notice saved!'
+                  )
+                }
+                className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm disabled:opacity-50 shrink-0"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{savingSection === 'maintenance' ? 'Saving...' : 'Save Notice'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: SUB FORCE (Dedicated Force Subscribe Management)
+  // -------------------------------------------------------------
+  if (subView === 'sub_force') {
+    const requiredList = Array.isArray(botSettings.requiredChannels) ? botSettings.requiredChannels : [];
+    const activeChannels = requiredList.filter((c: any) => c.enabled !== false);
+    const isChanAllowed = (ch: any) => {
+      if (!chatWhitelistEnabled) return true;
+      const cid = String(ch?.chatId || '').trim();
+      return allowedChats.some((a) => String(a.chatId || '').trim() === cid);
+    };
+
+    return (
+      <div className="space-y-4 pb-28 animate-tab-fade-in">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-white flex items-center gap-1.5 truncate">
+                <Radio className="w-4 h-4 text-indigo-400 shrink-0" />
+                <span className="truncate">Sub Force</span>
+              </h2>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={syncingChannels}
+            onClick={handleSyncBotChannels}
+            className="px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-indigo-300 hover:text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncingChannels ? 'animate-spin' : ''}`} />
+            <span>{syncingChannels ? 'Syncing...' : 'Sync Bot'}</span>
+          </button>
+        </div>
+
+        {/* Master Sub Force Card */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-indigo-950/25 via-zinc-900/80 to-zinc-950/90 border border-indigo-500/30 space-y-3">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                <Radio className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-bold text-white">Sub Force</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${
+                  botSettings.forceSubEnabled
+                    ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                    : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                }`}>
+                  {botSettings.forceSubEnabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={Boolean(botSettings.forceSubEnabled)}
+                onChange={async (e) => {
+                  const nextEnabled = e.target.checked;
+                  const prevEnabled = Boolean(botSettings.forceSubEnabled);
+                  setBotSettings((prev: any) => ({ ...prev, forceSubEnabled: nextEnabled }));
+                  await savePartialBotSetting(
+                    'forceSub',
+                    { forceSubEnabled: nextEnabled },
+                    nextEnabled ? 'Sub Force enabled' : 'Sub Force disabled',
+                    () => setBotSettings((prev: any) => ({ ...prev, forceSubEnabled: prevEnabled }))
+                  );
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-500"></div>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-zinc-950/70 border border-indigo-500/20">
+            <div className="flex items-center gap-2 text-xs text-indigo-300 font-semibold min-w-0">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <span className="hidden sm:inline-flex text-[10px] font-mono text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
+                /connect &lt;chat_id&gt;
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleOpenForceSubTemplate}
+              className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-indigo-300 hover:text-indigo-200 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer border border-zinc-700/80 whitespace-nowrap shrink-0"
+              title="Edit Force Sub Message Template"
+            >
+              <Edit2 className="w-3 h-3" />
+              <span>Edit Msg Template</span>
+            </button>
+          </div>
+
+          {/* Allow Chat Status Notice */}
+          {chatWhitelistEnabled && (
+            <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex flex-wrap items-center justify-between gap-2 text-[11px] text-cyan-200">
+              <span className="min-w-0 flex-1 font-medium">
+                Allow Chat active
+              </span>
+              <button
+                type="button"
+                onClick={() => setSubView('whitelist')}
+                className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 text-cyan-200 font-semibold text-[10px] whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Manage Allow Chat
+              </button>
+            </div>
+          )}
+
+          {/* Force Join Mode Toggle */}
+          <div className="p-3 rounded-xl bg-zinc-950/70 border border-indigo-500/30 space-y-2">
+            <div className="text-xs font-bold text-white">Force Join Mode</div>
+
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                {
+                  id: 'auto_join' as const,
+                  title: 'Auto Join'
+                },
+                {
+                  id: 'request_only' as const,
+                  title: 'Request Only'
+                }
+              ]).map((mode) => {
+                const isSelected = (botSettings.forceJoinMode || 'auto_join') === mode.id;
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={async () => {
+                      const prevMode = botSettings.forceJoinMode === 'request_only' ? 'request_only' : 'auto_join';
+                      if (prevMode === mode.id) return;
+                      setBotSettings((prev: any) => ({ ...prev, forceJoinMode: mode.id }));
+                      await savePartialBotSetting(
+                        'forceSub',
+                        { forceJoinMode: mode.id },
+                        mode.id === 'request_only'
+                          ? 'Force Join Mode switched to Request Only'
+                          : 'Force Join Mode switched to Auto Join',
+                        () => setBotSettings((prev: any) => ({ ...prev, forceJoinMode: prevMode }))
+                      );
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between gap-1.5 ${
+                      isSelected
+                        ? 'bg-indigo-500/20 border-indigo-400/60 text-white shadow-sm'
+                        : 'bg-zinc-900/70 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                    }`}
+                  >
+                    <span className="text-xs font-bold whitespace-nowrap">{mode.title}</span>
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        isSelected ? 'bg-indigo-400 shadow-[0_0_8px_#818cf8]' : 'bg-zinc-700'
+                      }`}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Join Request & Auto-Approval Settings */}
+          <div className="p-3 rounded-xl bg-zinc-950/70 border border-emerald-500/30 space-y-2.5">
+            <div className="flex items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <div className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <CheckCircle2 className="w-4 h-4" />
+                </div>
+                <span className="text-xs font-bold text-white truncate">Auto-Approve Join Requests</span>
+              </div>
+
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={botSettings.autoApproveJoinRequests !== false}
+                  onChange={async (e) => {
+                    const nextApprove = e.target.checked;
+                    const prevApprove = botSettings.autoApproveJoinRequests !== false;
+                    setBotSettings((prev: any) => ({ ...prev, autoApproveJoinRequests: nextApprove }));
+                    await savePartialBotSetting(
+                      'forceSub',
+                      { autoApproveJoinRequests: nextApprove },
+                      nextApprove ? 'Auto-Approve Join Requests enabled' : 'Auto-Approve Join Requests disabled',
+                      () => setBotSettings((prev: any) => ({ ...prev, autoApproveJoinRequests: prevApprove }))
+                    );
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="w-8 h-4 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
+              </label>
+            </div>
+
+            {/* Join Request Records Drawer */}
+            <div className="pt-2 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-[11px] text-zinc-400 tabular-nums">
+                <span className="text-zinc-300 font-medium">Join Requests:</span>
+                <span className="px-1.5 py-0.5 rounded bg-zinc-800 font-mono text-white text-[10px] border border-zinc-700">
+                  {joinRequests.length}
+                </span>
+                {joinRequests.filter(r => r.status === 'approved').length > 0 && (
+                  <span className="text-[10px] text-emerald-400 font-semibold">
+                    ({joinRequests.filter(r => r.status === 'approved').length} approved)
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => loadJoinRequests()}
+                  disabled={loadingJoinRequests}
+                  className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                  title="Refresh Join Requests"
+                >
+                  <RefreshCw className={`w-3 h-3 ${loadingJoinRequests ? 'animate-spin text-emerald-400' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowJoinRequests(!showJoinRequests)}
+                  className="text-[11px] text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                >
+                  <span>{showJoinRequests ? 'Hide' : 'View Log'}</span>
+                </button>
+              </div>
+            </div>
+
+            {showJoinRequests && (
+              <div className="mt-2 pt-2 border-t border-zinc-800/80 space-y-2 max-h-60 overflow-y-auto">
+                {joinRequests.length === 0 ? (
+                  <div className="p-3 rounded-lg bg-zinc-900/60 text-center text-xs text-zinc-400">
+                    No join requests yet.
+                  </div>
+                ) : (
+                  joinRequests.slice(0, 15).map((req) => (
+                    <div
+                      key={req.id}
+                      className="p-2 rounded-lg bg-zinc-900/80 border border-zinc-800 text-xs flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-white truncate">
+                            {req.userName || 'User'}
+                          </span>
+                          {req.userUsername && (
+                            <span className="text-[10px] text-zinc-400 truncate">
+                              {req.userUsername}
+                            </span>
+                          )}
+                          <span className="text-[9px] font-mono text-zinc-400 bg-zinc-800 px-1 rounded tabular-nums">
+                            ID: {req.userId}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-zinc-400 truncate mt-0.5">
+                          {req.chatTitle || req.chatId}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                          req.status === 'approved'
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        }`}>
+                          {req.status === 'approved' ? 'APPROVED' : 'PENDING'}
+                        </span>
+                        {req.status === 'pending' && (
+                          <button
+                            type="button"
+                            onClick={() => handleApproveJoinRequest(req.chatId, req.userId)}
+                            className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0"
+                          >
+                            Approve
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Add Channel Form */}
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => setShowManualAddChannel(!showManualAddChannel)}
+              className="text-xs text-indigo-400 hover:text-indigo-300 font-medium flex items-center gap-1.5 cursor-pointer py-1"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{showManualAddChannel ? 'Hide Add Channel' : 'Add Channel / Group'}</span>
+            </button>
+
+            {showManualAddChannel && (
+              <div className="mt-2 p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 space-y-2.5">
+                <div className="text-[11px] font-bold text-indigo-300 flex items-center gap-1">
+                  <Plus className="w-3.5 h-3.5 shrink-0" />
+                  <span>Add Channel</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-zinc-400 mb-1 block">Channel ID or @Username *</label>
+                    <input
+                      type="text"
+                      value={newChannelChatId}
+                      onChange={(e) => setNewChannelChatId(e.target.value)}
+                      placeholder="-1001234567890 or @channel"
+                      className="w-full bg-zinc-950 border border-zinc-700/80 rounded-lg p-2 text-xs text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-zinc-400 mb-1 block">Invite Link (Optional)</label>
+                    <input
+                      type="url"
+                      value={newChannelInviteLink}
+                      onChange={(e) => setNewChannelInviteLink(e.target.value)}
+                      placeholder="https://t.me/+..."
+                      className="w-full bg-zinc-950 border border-zinc-700/80 rounded-lg p-2 text-xs text-white font-mono placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                {pendingAllowChatError && (
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-200">
+                    <div className="min-w-0 flex-1">
+                      Allow Chat required: <b>{pendingAllowChatError.name}</b> (<code className="font-mono">{pendingAllowChatError.chatId}</code>)
+                    </div>
+                    <button
+                      type="button"
+                      disabled={whitelistSaving}
+                      onClick={() => handleAllowSubForceChannelChat(pendingAllowChatError, true)}
+                      className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      {whitelistSaving ? 'Allowing...' : 'Allow Chat & Add'}
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end pt-1">
+                  <button
+                    type="button"
+                    disabled={addingChannel}
+                    onClick={handleAddForceSubChannel}
+                    className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm whitespace-nowrap shrink-0 disabled:opacity-50"
+                  >
+                    {addingChannel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                    <span>{addingChannel ? 'Detecting...' : 'Add Channel'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Channels & Groups List */}
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <label className="text-[11px] font-semibold text-zinc-300 flex flex-wrap items-center gap-1.5 tabular-nums">
+                <span>Channels &amp; Groups</span>
+                <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                  {activeChannels.length}/{requiredList.length}
+                </span>
+              </label>
+            </div>
+
+            {requiredList.length === 0 ? (
+              <div className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800/80 text-center">
+                <div className="text-xs text-zinc-400">
+                  No connected channels or groups.
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {requiredList.map((ch: any) => {
+                  const isChanActive = ch.enabled !== false;
+                  const isAuto = ch.isAutoDetected !== false;
+                  const channelType = ch.type || (String(ch.chatId).startsWith('-100') ? 'channel' : 'supergroup');
+                  const allowedByWhitelist = isChanAllowed(ch);
+
+                  return (
+                    <div
+                      key={ch.id}
+                      className={`p-3 rounded-xl border transition-all text-xs flex flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 ${
+                        isChanActive
+                          ? 'bg-zinc-950/80 border-indigo-500/40 shadow-sm'
+                          : 'bg-zinc-900/40 border-zinc-800/60 opacity-60'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-white text-xs truncate">
+                            {ch.name}
+                          </span>
+
+                          <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700">
+                            {channelType === 'supergroup' ? 'Supergroup' : channelType === 'group' ? 'Group' : 'Channel'}
+                          </span>
+
+                          {isAuto && (
+                            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                              Synced
+                            </span>
+                          )}
+
+                          <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${
+                            isChanActive
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                          }`}>
+                            {isChanActive ? 'Active' : 'Off'}
+                          </span>
+
+                          {chatWhitelistEnabled && (
+                            allowedByWhitelist ? (
+                              <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                                Allowed
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={whitelistSaving}
+                                onClick={() => handleAllowSubForceChannelChat({
+                                  chatId: String(ch.chatId),
+                                  name: ch.name,
+                                  type: channelType,
+                                  username: ch.username
+                                }, false)}
+                                className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 cursor-pointer whitespace-nowrap"
+                              >
+                                + Allow Chat
+                              </button>
+                            )
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-[10px] text-zinc-400 min-w-0">
+                          <span className="font-mono text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20 truncate max-w-full">
+                            {ch.chatId}
+                          </span>
+
+                          {ch.inviteLink && (
+                            <a
+                              href={ch.inviteLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-zinc-400 hover:text-indigo-300 min-w-0 break-all inline-flex items-center gap-1 transition-colors"
+                            >
+                              <span className="truncate max-w-[200px] sm:max-w-none">{ch.inviteLink}</span>
+                              <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 ml-auto">
+                        <label className="relative inline-flex items-center cursor-pointer" title={isChanActive ? "Turn OFF" : "Turn ON"}>
+                          <input
+                            type="checkbox"
+                            checked={isChanActive}
+                            onChange={() => handleToggleChannel(ch.id, isChanActive)}
+                            className="sr-only peer"
+                          />
+                          <div className="w-8 h-4 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
+                        </label>
+
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveForceSubChannel(ch.id)}
+                          className="p-1.5 rounded-lg bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
+                          title="Remove channel"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Telegram Inline Button Preview */}
+          {activeChannels.length > 0 && (
+            <div className="p-3.5 rounded-xl bg-zinc-950/70 border border-indigo-500/30 space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 flex flex-wrap items-center justify-between gap-1.5">
+                <span>Button Preview</span>
+                <span className="text-zinc-400 font-normal tabular-nums">
+                  {activeChannels.length} active
+                </span>
+              </div>
+
+              <div className="space-y-1.5 pt-0.5">
+                {activeChannels.map((c: any, idx: number) => (
+                  <div
+                    key={c.id}
+                    className="w-full py-2 px-3 rounded-xl bg-blue-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow-sm border border-blue-500/40 select-none"
+                  >
+                    <span className="truncate">Join {c.name || `Channel ${idx + 1}`}</span>
+                  </div>
+                ))}
+                <div className="w-full py-2 px-3 rounded-xl bg-emerald-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm border border-emerald-500/40 select-none">
+                  <span>Verify / Try Again</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Save Sub Force Button */}
+          <div className="pt-2 border-t border-indigo-500/20 flex items-center justify-end">
+            <button
+              type="button"
+              disabled={savingSection === 'forceSub'}
+              onClick={handleSaveForceSubChannels}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm disabled:opacity-50 whitespace-nowrap shrink-0"
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>{savingSection === 'forceSub' ? 'Saving...' : 'Save Channels'}</span>
+            </button>
+          </div>
+        </div>
+
+        {renderTemplateEditModal()}
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: GROUP MANAGEMENT (Dedicated Moderation Controls)
+  // -------------------------------------------------------------
+  if (subView === 'group_management') {
+    const activeGroupModsCount = [
+      Boolean(botSettings.linkDeleteEnabled),
+      Boolean(botSettings.antiForwardEnabled),
+      botSettings.banEnabled !== false,
+      botSettings.muteEnabled !== false
+    ].filter(Boolean).length;
+
+    return (
+      <div className="space-y-4 pb-28 animate-tab-fade-in">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-white flex items-center gap-1.5 truncate">
+                <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0" />
+                <span className="truncate">Group Management</span>
+              </h2>
+              <p className="text-[11px] text-zinc-400 truncate">
+                Automated group moderation, spam deletion &amp; member restriction controls
+              </p>
+            </div>
+          </div>
+
+          <span className="text-[11px] px-2.5 py-1 rounded-xl bg-sky-500/15 border border-sky-500/30 text-sky-300 font-semibold font-mono tabular-nums whitespace-nowrap shrink-0">
+            {activeGroupModsCount}/4 Active
+          </span>
+        </div>
+
+        {/* 1. Link Delete */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-rose-950/25 via-zinc-900/80 to-zinc-950/90 border border-rose-500/30">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                <Link2 className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Link Delete</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${
+                    botSettings.linkDeleteEnabled
+                      ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                      : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                  }`}>
+                    {botSettings.linkDeleteEnabled ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Automatically delete unauthorized links &amp; URLs sent by non-admin members in groups with {botSettings.groupWarningLimit ?? 3}-warning auto-ban
+                </p>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={Boolean(botSettings.linkDeleteEnabled)}
+                disabled={savingSection === 'linkDelete'}
+                onChange={async (e) => {
+                  const nextEnabled = e.target.checked;
+                  const prevEnabled = Boolean(botSettings.linkDeleteEnabled);
+                  setBotSettings((prev: any) => ({ ...prev, linkDeleteEnabled: nextEnabled }));
+                  await savePartialBotSetting(
+                    'linkDelete',
+                    { linkDeleteEnabled: nextEnabled },
+                    nextEnabled ? 'Link Delete turned ON' : 'Link Delete turned OFF',
+                    () => setBotSettings((prev: any) => ({ ...prev, linkDeleteEnabled: prevEnabled }))
+                  );
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-rose-500"></div>
+            </label>
+          </div>
+        </div>
+
+        {/* 2. Forward Message Delete */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-violet-950/25 via-zinc-900/80 to-zinc-950/90 border border-violet-500/30">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-violet-500/20 border border-violet-500/30 flex items-center justify-center text-violet-400 shrink-0">
+                <ShieldAlert className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Forward Message Delete</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${
+                    botSettings.antiForwardEnabled
+                      ? 'bg-violet-500/20 text-violet-300 border-violet-500/40'
+                      : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                  }`}>
+                    {botSettings.antiForwardEnabled ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Detect and delete external forwarded messages from other chats, channels, or users in groups
+                </p>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={Boolean(botSettings.antiForwardEnabled)}
+                disabled={savingSection === 'antiForward'}
+                onChange={async (e) => {
+                  const nextEnabled = e.target.checked;
+                  const prevEnabled = Boolean(botSettings.antiForwardEnabled);
+                  setBotSettings((prev: any) => ({ ...prev, antiForwardEnabled: nextEnabled }));
+                  await savePartialBotSetting(
+                    'antiForward',
+                    { antiForwardEnabled: nextEnabled },
+                    nextEnabled ? 'Forward Message Delete turned ON' : 'Forward Message Delete turned OFF',
+                    () => setBotSettings((prev: any) => ({ ...prev, antiForwardEnabled: prevEnabled }))
+                  );
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-500"></div>
+            </label>
+          </div>
+        </div>
+
+        {/* 3. Ban / Unban */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-amber-950/20 via-zinc-900/80 to-zinc-950/90 border border-amber-500/30">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <Ban className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Ban / Unban</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${
+                    botSettings.banEnabled !== false
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                  }`}>
+                    {botSettings.banEnabled !== false ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Allow <code className="text-amber-300">/ban</code> &amp; <code className="text-amber-300">/unban</code> moderation commands and automatic {botSettings.groupWarningLimit ?? 3}-warning bans in groups
+                </p>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={botSettings.banEnabled !== false}
+                disabled={savingSection === 'ban'}
+                onChange={async (e) => {
+                  const nextEnabled = e.target.checked;
+                  const prevEnabled = botSettings.banEnabled !== false;
+                  setBotSettings((prev: any) => ({ ...prev, banEnabled: nextEnabled }));
+                  await savePartialBotSetting(
+                    'ban',
+                    { banEnabled: nextEnabled },
+                    nextEnabled ? 'Ban / Unban turned ON' : 'Ban / Unban turned OFF',
+                    () => setBotSettings((prev: any) => ({ ...prev, banEnabled: prevEnabled }))
+                  );
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+            </label>
+          </div>
+        </div>
+
+        {/* 4. Mute / Unmute */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-sky-950/25 via-zinc-900/80 to-zinc-950/90 border border-sky-500/30">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
+                <VolumeX className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Mute / Unmute</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${
+                    botSettings.muteEnabled !== false
+                      ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                      : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                  }`}>
+                    {botSettings.muteEnabled !== false ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Allow <code className="text-sky-300">/mute [1m|10m|1h]</code> &amp; <code className="text-sky-300">/unmute</code> group member restrictions
+                </p>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={botSettings.muteEnabled !== false}
+                disabled={savingSection === 'mute'}
+                onChange={async (e) => {
+                  const nextEnabled = e.target.checked;
+                  const prevEnabled = botSettings.muteEnabled !== false;
+                  setBotSettings((prev: any) => ({ ...prev, muteEnabled: nextEnabled }));
+                  await savePartialBotSetting(
+                    'mute',
+                    { muteEnabled: nextEnabled },
+                    nextEnabled ? 'Mute / Unmute turned ON' : 'Mute / Unmute turned OFF',
+                    () => setBotSettings((prev: any) => ({ ...prev, muteEnabled: prevEnabled }))
+                  );
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sky-500"></div>
+            </label>
+          </div>
+        </div>
+
+        {/* 5. Warning Limit */}
+        <div className="glass-panel rounded-2xl p-4 bg-gradient-to-br from-orange-950/20 via-zinc-900/80 to-zinc-950/90 border border-orange-500/30 space-y-3">
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-orange-500/20 border border-orange-500/30 flex items-center justify-center text-orange-400 shrink-0">
+                <AlertCircle className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5 flex-wrap">
+                  <span>Warning Limit</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold font-mono tabular-nums bg-orange-500/20 text-orange-300 border border-orange-500/40">
+                    {botSettings.groupWarningLimit ?? 3} Warnings
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-400 mt-0.5">
+                  Auto-ban member after reaching this warning limit for group violations
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setWarningLimitInput((v) => Math.max(1, (Number(v) || 3) - 1))}
+                className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 cursor-pointer"
+                title="Decrease warning limit"
+              >
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={warningLimitInput}
+                onChange={(e) => setWarningLimitInput(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1)))}
+                className="w-20 px-3 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-center text-white tabular-nums focus:outline-none focus:border-orange-500"
+              />
+              <button
+                type="button"
+                onClick={() => setWarningLimitInput((v) => Math.min(100, (Number(v) || 3) + 1))}
+                className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 cursor-pointer"
+                title="Increase warning limit"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1">
+              {[2, 3, 5, 10].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setWarningLimitInput(preset)}
+                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold font-mono border tabular-nums cursor-pointer transition-colors ${
+                    warningLimitInput === preset
+                      ? 'bg-orange-500/20 text-orange-300 border-orange-500/40'
+                      : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-white'
+                  }`}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              disabled={savingSection === 'warningLimit'}
+              onClick={async () => {
+                const nextLimit = Math.max(1, Math.min(100, Math.round(Number(warningLimitInput) || 3)));
+                const prevLimit = botSettings.groupWarningLimit ?? 3;
+                setWarningLimitInput(nextLimit);
+                setBotSettings((prev: any) => ({ ...prev, groupWarningLimit: nextLimit }));
+                await savePartialBotSetting(
+                  'warningLimit',
+                  { groupWarningLimit: nextLimit },
+                  `Warning limit set to ${nextLimit}`,
+                  () => {
+                    setBotSettings((prev: any) => ({ ...prev, groupWarningLimit: prevLimit }));
+                    setWarningLimitInput(prevLimit);
+                  }
+                );
+              }}
+              className="ml-auto px-3.5 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>{savingSection === 'warningLimit' ? 'Saving...' : 'Save Limit'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Group Scope & Command Reference */}
+        <div className="glass-panel rounded-2xl p-4 border border-zinc-800 space-y-2.5 text-[11px] text-zinc-400">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold text-white">Group Moderation Info</span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono tabular-nums">
+              {chatWhitelistEnabled ? `${allowedChats.length} Allowed Chat(s)` : 'All Connected Groups'}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
+            <div><code className="text-sky-300">/ban [user]</code> — Ban permanently</div>
+            <div><code className="text-sky-300">/unban &lt;id_or_@user&gt;</code> — Unban user</div>
+            <div><code className="text-sky-300">/mute [user] [1m|1h]</code> — Mute user</div>
+            <div><code className="text-sky-300">/unmute &lt;id_or_@user&gt;</code> — Unmute user</div>
+            <div><code className="text-sky-300">/linkdelete [on|off]</code> — Toggle link delete</div>
+            <div><code className="text-sky-300">/allowchat &lt;chat_id&gt;</code> — Whitelist group</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: WEBHOOK SETUP (Standalone Section)
+  // -------------------------------------------------------------
+  if (subView === 'webhook') {
+    return (
+      <div className="space-y-4 pb-28">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <h2 className="text-base font-bold text-white truncate">Webhook Setup</h2>
+          </div>
+          <span className="text-xs text-zinc-400 shrink-0">Endpoint Config</span>
+        </div>
+
+        {webhookStatusMsg && (
+          <div
+            className={`p-3 rounded-xl text-xs flex items-start gap-2 ${
+              webhookStatusMsg.type === 'success'
+                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-300'
+                : 'bg-rose-500/10 border border-rose-500/20 text-rose-300'
+            }`}
+          >
+            {webhookStatusMsg.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            )}
+            <div className="min-w-0 space-y-1">
+              <div className="font-semibold break-words">{webhookStatusMsg.text}</div>
+              {webhookStatusMsg.details && (
+                <div className="text-[11px] font-mono text-zinc-300 bg-zinc-950/70 p-2 rounded-lg border border-zinc-800 space-y-0.5">
+                  <div className="break-words">Bot Name: {webhookStatusMsg.details.first_name}</div>
+                  <div className="break-all">Username: @{webhookStatusMsg.details.username}</div>
+                  <div>Bot ID: {webhookStatusMsg.details.id}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="glass-panel rounded-2xl p-4 border border-zinc-800 space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-zinc-300 mb-1">
+              Application Webhook URL
+            </label>
+            <input
+              type="text"
+              value={webhookAppUrl}
+              onChange={(e) => setWebhookAppUrl(e.target.value)}
+              placeholder="e.g. https://your-app-domain.com"
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl py-2 px-3 text-xs text-white font-mono focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 min-[340px]:grid-cols-2 gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleCheckBotInfo}
+              disabled={webhookLoading}
+              className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
+            >
+              {webhookLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5" />
+              )}
+              <span>Test Bot Token</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleRegisterWebhook}
+              disabled={webhookLoading}
+              className="p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-blue-600/30 disabled:opacity-50 transition-colors"
+            >
+              {webhookLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Wifi className="w-3.5 h-3.5" />
+              )}
+              <span>Set Webhook</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: BROADCAST SYSTEM (Rich Media: Photo, Video, Audio, Voice, Text)
+  // -------------------------------------------------------------
+  if (subView === 'broadcast') {
+    return (
+      <div className="space-y-4 pb-28">
+        {/* Navigation Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <h2 className="text-base font-bold text-white truncate">Broadcast</h2>
+          </div>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[11px] text-emerald-300 font-semibold shrink-0">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>{broadcastUsersCount} Reachable Users</span>
+          </div>
+        </div>
+
+        {/* Broadcast Container */}
+        <div className="glass-panel rounded-3xl p-4 sm:p-5 border border-zinc-800 space-y-4 shadow-xl">
+          {/* Header */}
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-red-500/20 to-rose-600/30 text-red-400 border border-red-500/40 flex items-center justify-center shrink-0 shadow-md shadow-red-500/10">
+              <Megaphone className="w-5 h-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-bold text-white tracking-tight">Mass Broadcast Notification</h3>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/40 font-mono font-semibold">
+                  All Media
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-0.5">
+                Dispatch rich notifications and announcements to all bot users in direct message. Strictly supports all rich media types.
+              </p>
+            </div>
+          </div>
+
+          {/* 1. Media Type Selector */}
+          <div>
+            <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+              Select Notification Type *
+            </label>
+            <div className="grid grid-cols-5 gap-1 sm:gap-1.5 p-1 bg-zinc-900 border border-zinc-800 rounded-2xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setBroadcastMediaType('text');
+                  setBroadcastFile(null);
+                  setBroadcastMediaUrl('');
+                }}
+                className={`min-w-0 py-2 px-0.5 sm:px-1 rounded-xl text-xs font-semibold flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                  broadcastMediaType === 'text'
+                    ? 'bg-red-500/20 text-sky-300 border border-red-500/40 shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <MessageSquare className="w-4 h-4" />
+                <span className="text-[10px] sm:text-[11px] truncate max-w-full">Text</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setBroadcastMediaType('photo')}
+                className={`min-w-0 py-2 px-0.5 sm:px-1 rounded-xl text-xs font-semibold flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                  broadcastMediaType === 'photo'
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <ImageIcon className="w-4 h-4" />
+                <span className="text-[10px] sm:text-[11px] truncate max-w-full">Photo</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setBroadcastMediaType('video')}
+                className={`min-w-0 py-2 px-0.5 sm:px-1 rounded-xl text-xs font-semibold flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                  broadcastMediaType === 'video'
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <VideoIcon className="w-4 h-4" />
+                <span className="text-[10px] sm:text-[11px] truncate max-w-full">Video</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setBroadcastMediaType('audio')}
+                className={`min-w-0 py-2 px-0.5 sm:px-1 rounded-xl text-xs font-semibold flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                  broadcastMediaType === 'audio'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Music className="w-4 h-4" />
+                <span className="text-[10px] sm:text-[11px] truncate max-w-full">Audio</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setBroadcastMediaType('voice')}
+                className={`min-w-0 py-2 px-0.5 sm:px-1 rounded-xl text-xs font-semibold flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                  broadcastMediaType === 'voice'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Mic className="w-4 h-4" />
+                <span className="text-[10px] sm:text-[11px] truncate max-w-full">Voice</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 2. Media Source Selection & File Picker (When mediaType !== 'text') */}
+          {broadcastMediaType !== 'text' && (
+            <div className="p-3.5 rounded-2xl bg-gradient-to-b from-zinc-900 to-zinc-950 border border-zinc-800 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  {broadcastMediaType === 'photo' && <ImageIcon className="w-4 h-4 text-rose-400" />}
+                  {broadcastMediaType === 'video' && <VideoIcon className="w-4 h-4 text-purple-400" />}
+                  {broadcastMediaType === 'audio' && <Music className="w-4 h-4 text-amber-400" />}
+                  {broadcastMediaType === 'voice' && <Mic className="w-4 h-4 text-emerald-400" />}
+                  <span className="capitalize">{broadcastMediaType} Media Source</span>
+                </span>
+
+                <div className="flex bg-zinc-950 p-0.5 rounded-lg border border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={() => setBroadcastMediaSource('upload')}
+                    className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                      broadcastMediaSource === 'upload'
+                        ? 'bg-red-500/20 text-sky-300 border border-red-500/30'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    Upload File
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBroadcastMediaSource('url')}
+                    className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                      broadcastMediaSource === 'url'
+                        ? 'bg-red-500/20 text-sky-300 border border-red-500/30'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    URL / File ID
+                  </button>
+                </div>
+              </div>
+
+              {/* Upload from Gallery / Device */}
+              {broadcastMediaSource === 'upload' && (
+                <div className="space-y-2">
+                  <label className="w-full py-4 px-4 rounded-xl border border-dashed border-zinc-700 hover:border-red-500/50 bg-zinc-900/60 hover:bg-zinc-900 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition-all">
+                    <Paperclip className="w-5 h-5 text-red-400" />
+                    <span className="text-xs font-semibold text-white">
+                      {broadcastFile ? broadcastFile.name : `Select ${broadcastMediaType.toUpperCase()} from Device`}
+                    </span>
+                    <span className="text-[10px] text-zinc-400">
+                      {broadcastMediaType === 'photo' && 'Supports JPG, PNG, WEBP (gallery photos)'}
+                      {broadcastMediaType === 'video' && 'Supports MP4, MOV, MKV, WebM video clips'}
+                      {broadcastMediaType === 'audio' && 'Supports MP3, M4A, WAV audio files'}
+                      {broadcastMediaType === 'voice' && 'Supports OGG, MP3, M4A voice notes'}
+                    </span>
+                    <input
+                      type="file"
+                      accept={
+                        broadcastMediaType === 'photo' ? 'image/*' :
+                        broadcastMediaType === 'video' ? 'video/*' :
+                        broadcastMediaType === 'audio' ? 'audio/*' :
+                        'audio/*,.ogg,.mp3,.m4a'
+                      }
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setBroadcastFile(file);
+                        }
+                      }}
+                    />
+                  </label>
+
+                  {broadcastFile && (
+                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs">
+                      <div className="flex items-center gap-2 min-w-0 pr-2">
+                        {broadcastMediaType === 'photo' && <ImageIcon className="w-4 h-4 text-rose-400 shrink-0" />}
+                        {broadcastMediaType === 'video' && <VideoIcon className="w-4 h-4 text-purple-400 shrink-0" />}
+                        {broadcastMediaType === 'audio' && <Music className="w-4 h-4 text-amber-400 shrink-0" />}
+                        {broadcastMediaType === 'voice' && <Mic className="w-4 h-4 text-emerald-400 shrink-0" />}
+                        <div className="truncate text-white font-medium">
+                          {broadcastFile.name}
+                        </div>
+                        <span className="text-[10px] text-zinc-400 font-mono shrink-0">
+                          ({(broadcastFile.size / (1024 * 1024)).toFixed(2)} MB)
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setBroadcastFile(null)}
+                        className="text-rose-400 hover:text-rose-300 text-[11px] font-semibold cursor-pointer shrink-0"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* URL or Telegram File ID input */}
+              {broadcastMediaSource === 'url' && (
+                <div>
+                  <input
+                    type="text"
+                    value={broadcastMediaUrl}
+                    onChange={(e) => setBroadcastMediaUrl(e.target.value)}
+                    placeholder={`Enter ${broadcastMediaType} URL or Telegram file_id...`}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded-xl py-2 px-3 text-xs text-white font-mono focus:outline-none focus:border-red-500 placeholder:text-zinc-600"
+                  />
+                  <p className="text-[10px] text-zinc-400 mt-1">
+                    Direct public media URL or pre-existing Telegram file_id.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 3. Notification Message / Caption Textarea */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-zinc-300">
+                {broadcastMediaType === 'text' ? 'Announcement Message *' : 'Media Caption (Optional)'}
+              </label>
+              <span className="text-[11px] text-zinc-500 font-mono">
+                {broadcastMessage.length} characters
+              </span>
+            </div>
+
+            <textarea
+              ref={broadcastTextareaRef}
+              rows={4}
+              value={broadcastMessage}
+              onChange={(e) => {
+                setBroadcastMessage(e.target.value);
+                syncTextareaSelection(e.currentTarget, broadcastSelectionRef);
+              }}
+              onSelect={(e) => syncTextareaSelection(e.currentTarget, broadcastSelectionRef)}
+              onKeyUp={(e) => syncTextareaSelection(e.currentTarget, broadcastSelectionRef)}
+              onClick={(e) => syncTextareaSelection(e.currentTarget, broadcastSelectionRef)}
+              onBlur={(e) => syncTextareaSelection(e.currentTarget, broadcastSelectionRef)}
+              placeholder={
+                broadcastMediaType === 'text'
+                  ? 'Write your announcement message here... (HTML tags <b>, <i>, <code> supported)'
+                  : 'Add an optional caption for this media...'
+              }
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl p-3 text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/30 transition-colors"
+            />
+
+            {/* Formatting & Placeholder Helpers */}
+            <div className="flex flex-wrap items-center justify-between gap-1 pt-1">
+              <div className="flex flex-wrap gap-1">
+                {['user_name', 'user_id', 'bot_name'].map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() =>
+                      insertAtCursor(
+                        broadcastTextareaRef.current,
+                        broadcastMessage,
+                        `{${v}}`,
+                        setBroadcastMessage,
+                        broadcastSelectionRef
+                      )
+                    }
+                    className="bg-zinc-800 border border-zinc-700/80 px-1.5 py-0.5 rounded text-red-400 text-[10px] font-mono hover:bg-zinc-700 cursor-pointer"
+                  >
+                    +{`{${v}}`}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-1 text-[10px] text-zinc-400">
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    wrapSelectionWithTag(
+                      broadcastTextareaRef.current,
+                      broadcastMessage,
+                      '<b>',
+                      '</b>',
+                      'bold text',
+                      setBroadcastMessage,
+                      broadcastSelectionRef
+                    )
+                  }
+                  className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold cursor-pointer"
+                >
+                  B
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    wrapSelectionWithTag(
+                      broadcastTextareaRef.current,
+                      broadcastMessage,
+                      '<i>',
+                      '</i>',
+                      'italic text',
+                      setBroadcastMessage,
+                      broadcastSelectionRef
+                    )
+                  }
+                  className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 italic cursor-pointer"
+                >
+                  I
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    wrapSelectionWithTag(
+                      broadcastTextareaRef.current,
+                      broadcastMessage,
+                      '<code>',
+                      '</code>',
+                      'code',
+                      setBroadcastMessage,
+                      broadcastSelectionRef
+                    )
+                  }
+                  className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-mono cursor-pointer"
+                >
+                  &lt;/&gt;
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 4. Broadcast Options (Pin Message) */}
+          <div className="p-3 rounded-2xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-300">
+                <Pin className="w-3.5 h-3.5" />
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-white">Pin Message</div>
+                <div className="text-[10px] text-zinc-400">Pin notification at the top of user chat</div>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={broadcastPin}
+                onChange={(e) => setBroadcastPin(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-500"></div>
+            </label>
+          </div>
+
+          {/* 5. Result Banner */}
+          {broadcastResult && (
+            <div
+              className={`p-3.5 rounded-2xl text-xs space-y-1.5 animate-in fade-in duration-200 ${
+                broadcastResult.type === 'success'
+                  ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'
+              }`}
+            >
+              <div className="flex items-center gap-2 font-semibold">
+                {broadcastResult.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                )}
+                <span>{broadcastResult.text}</span>
+              </div>
+              {broadcastResult.details && (
+                <div className="text-[11px] text-zinc-300 font-mono pt-1 border-t border-emerald-500/20 flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span>Total: <b>{broadcastResult.details.total}</b></span>
+                  <span className="text-emerald-400">Delivered: <b>{broadcastResult.details.sent}</b></span>
+                  {broadcastResult.details.failed > 0 && (
+                    <span className="text-rose-400">Failed / Blocked: <b>{broadcastResult.details.failed}</b></span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 6. Action Buttons */}
+          <div className="pt-2 flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              onClick={handleTestBroadcast}
+              disabled={broadcastSending || broadcastTesting}
+              className="py-2.5 px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer border border-zinc-700 transition-colors disabled:opacity-50"
+            >
+              {broadcastTesting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Sending Test...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Test to Me</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSendBroadcast}
+              disabled={broadcastSending || broadcastTesting}
+              className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white text-xs font-bold flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-red-600/30 transition-all disabled:opacity-50 active:scale-95"
+            >
+              {broadcastSending ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Broadcasting to {broadcastUsersCount} users...</span>
+                </>
+              ) : (
+                <>
+                  <Megaphone className="w-4 h-4" />
+                  <span>Broadcast to All Users ({broadcastUsersCount})</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: USER REPORTS
+  // -------------------------------------------------------------
+  if (subView === 'reports') {
+    const filteredReports = reportsList.filter((r) => {
+      if (reportFilter === 'all') return true;
+      return r.status === reportFilter;
+    });
+
+    const pendingCount = reportsList.filter((r) => r.status === 'pending').length;
+    const resolvedCount = reportsList.filter((r) => r.status === 'resolved').length;
+    const dismissedCount = reportsList.filter((r) => r.status === 'dismissed').length;
+
+    return (
+      <div className="space-y-4 pb-28">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <h2 className="text-base font-bold text-white truncate">User Reports</h2>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={loadReports}
+              disabled={reportsLoading}
+              className="px-2.5 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${reportsLoading ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Header Summary */}
+        <div className="p-4 rounded-2xl glass-panel border border-rose-500/30 bg-gradient-to-r from-rose-950/30 via-zinc-900 to-zinc-900 shadow-lg space-y-2">
+          <div className="flex items-center gap-2 text-rose-400 text-xs font-bold uppercase tracking-wider">
+            <Flag className="w-4 h-4" />
+            <span>User Reports Management</span>
+          </div>
+          <p className="text-xs text-zinc-300 leading-relaxed">
+            Review reports submitted by group members using the <code className="text-rose-300 font-mono">/report</code> command. Take instant action to ban violators or dismiss false flags.
+          </p>
+
+          <div className="grid grid-cols-2 min-[360px]:grid-cols-4 gap-2 pt-2">
+            <div className="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800 text-center">
+              <div className="text-lg font-bold text-white font-mono">{reportsList.length}</div>
+              <div className="text-[10px] text-zinc-400">Total</div>
+            </div>
+            <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center">
+              <div className="text-lg font-bold text-rose-400 font-mono">{pendingCount}</div>
+              <div className="text-[10px] text-rose-300">Pending</div>
+            </div>
+            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
+              <div className="text-lg font-bold text-emerald-400 font-mono">{resolvedCount}</div>
+              <div className="text-[10px] text-emerald-300">Resolved</div>
+            </div>
+            <div className="p-2.5 rounded-xl bg-zinc-800/50 border border-zinc-700 text-center">
+              <div className="text-lg font-bold text-zinc-400 font-mono">{dismissedCount}</div>
+              <div className="text-[10px] text-zinc-400">Dismissed</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Filter Tabs */}
+        <div className="grid grid-cols-2 min-[360px]:grid-cols-4 gap-1.5 p-1 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-medium">
+          {(['all', 'pending', 'resolved', 'dismissed'] as const).map((filter) => (
+            <button
+              key={filter}
+              onClick={() => setReportFilter(filter)}
+              className={`min-w-0 py-1.5 px-2 rounded-lg text-center capitalize transition-colors cursor-pointer truncate ${
+                reportFilter === filter
+                  ? 'bg-rose-500 text-white font-semibold shadow-sm'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              {filter}
+            </button>
+          ))}
+        </div>
+
+        {/* Reports List */}
+        {reportsLoading ? (
+          <div className="p-8 text-center text-xs text-zinc-400 flex items-center justify-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-rose-400" />
+            <span>Loading user reports...</span>
+          </div>
+        ) : filteredReports.length === 0 ? (
+          <div className="p-8 rounded-2xl glass-panel border border-zinc-800 text-center space-y-2">
+            <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto" />
+            <div className="text-xs font-semibold text-white">No reports found</div>
+            <p className="text-[11px] text-zinc-400">
+              {reportFilter === 'all'
+                ? 'No reports have been submitted yet. When users reply with /report, they will show up here.'
+                : `No ${reportFilter} reports at this time.`}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {filteredReports.map((report) => (
+              <div
+                key={report.id}
+                className="p-4 rounded-2xl glass-panel border border-zinc-800 hover:border-zinc-700 transition-all space-y-3"
+              >
+                {/* Header: Status and timestamp */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                      report.status === 'pending'
+                        ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                        : report.status === 'resolved'
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                    }`}
+                  >
+                    {report.status}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    {new Date(report.createdAt).toLocaleString()}
+                  </span>
+                </div>
+
+                {/* Users info */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1">
+                    <span className="text-[10px] text-zinc-500 uppercase font-semibold">Reported User</span>
+                    <div className="font-semibold text-white truncate">
+                      {report.reportedUserName || 'User'}
+                    </div>
+                    <div className="text-[11px] text-zinc-400 font-mono">
+                      {report.reportedUserUsername ? `@${report.reportedUserUsername}` : `ID: ${report.reportedUserId}`}
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1">
+                    <span className="text-[10px] text-zinc-500 uppercase font-semibold">Reported By</span>
+                    <div className="font-semibold text-zinc-300 truncate">
+                      {report.reporterName || 'Reporter'}
+                    </div>
+                    <div className="text-[11px] text-zinc-400 font-mono">
+                      {report.reporterUsername ? `@${report.reporterUsername}` : `ID: ${report.reporterId}`}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Reason & Chat */}
+                <div className="space-y-1 text-xs">
+                  <div className="text-zinc-400 flex items-center gap-1">
+                    <span className="font-semibold text-zinc-300">Reason:</span>
+                    <span className="text-rose-300 italic">{report.reason}</span>
+                  </div>
+                  {report.chatTitle && (
+                    <div className="text-[11px] text-zinc-500">
+                      Chat: <span className="text-zinc-300">{report.chatTitle}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Content Quote */}
+                {report.reportedContent && (
+                  <div className="p-2.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80 text-[11px] font-mono text-zinc-300">
+                    <span className="text-zinc-500 block text-[9px] uppercase font-sans mb-0.5">Reported Message:</span>
+                    <div className="line-clamp-3 whitespace-pre-wrap">{report.reportedContent}</div>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-800/60">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {report.status === 'pending' && (
+                      <>
+                        <button
+                          onClick={() => handleResolveReport(report.id, true)}
+                          disabled={reportActionLoading === report.id}
+                          className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                        >
+                          <Ban className="w-3.5 h-3.5" />
+                          <span>Ban User</span>
+                        </button>
+                        <button
+                          onClick={() => handleResolveReport(report.id, false)}
+                          disabled={reportActionLoading === report.id}
+                          className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          <span>Resolve</span>
+                        </button>
+                        <button
+                          onClick={() => handleDismissReport(report.id)}
+                          disabled={reportActionLoading === report.id}
+                          className="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors cursor-pointer"
+                        >
+                          Dismiss
+                        </button>
+                      </>
+                    )}
+                    {report.status !== 'pending' && (
+                      <span className="text-[11px] text-zinc-500 italic">
+                        Marked as {report.status}
+                      </span>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={() => handleDeleteReport(report.id)}
+                    className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                    title="Delete Record"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: FRAUD PROTECTION & WORD FILTER
+  // -------------------------------------------------------------
+  if (subView === 'fraud') {
+    return (
+      <div className="space-y-4 pb-28">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <h2 className="text-base font-bold text-white truncate">Fraud Filter</h2>
+          </div>
+          <button
+            onClick={() => {
+              if (showAddFraudRule) {
+                resetFraudForm();
+                setShowAddFraudRule(false);
+              } else {
+                resetFraudForm();
+                setShowAddFraudRule(true);
+              }
+            }}
+            className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>{showAddFraudRule ? 'Close Form' : 'Add Word Rule'}</span>
+          </button>
+        </div>
+
+        {/* Header card */}
+        <div className="p-4 rounded-2xl glass-panel border border-amber-500/30 bg-gradient-to-r from-amber-950/30 via-zinc-900 to-zinc-900 shadow-lg space-y-2">
+          <div className="flex items-center gap-2 text-amber-400 text-xs font-bold uppercase tracking-wider">
+            <ShieldAlert className="w-4 h-4" />
+            <span>Fraud Protection &amp; Anti-Scam Rules</span>
+          </div>
+          <p className="text-xs text-zinc-300 leading-relaxed">
+            Automatically block and penalize malicious keywords, spam, or scam phrases in group chats. When triggered by a non-admin, the bot instantly deletes the message, warns the user, or issues a ban.
+          </p>
+        </div>
+
+        {/* Add / Edit Rule Form */}
+        {showAddFraudRule && (
+          <form
+            onSubmit={handleCreateFraudRule}
+            className="p-4 rounded-2xl glass-panel border border-amber-500/40 bg-zinc-900/95 space-y-3 shadow-xl"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-xs font-bold text-white uppercase tracking-wider">
+                {editingFraudRule ? 'Edit Restricted Keyword Rule' : 'Add Restricted Keyword Rule'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  resetFraudForm();
+                  setShowAddFraudRule(false);
+                }}
+                className="text-zinc-500 hover:text-zinc-300 shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold text-zinc-300 block mb-1">
+                Restricted Keyword or Phrase <span className="text-rose-400">*</span>
+              </label>
+              <input
+                type="text"
+                value={newFraudKeyword}
+                onChange={(e) => setNewFraudKeyword(e.target.value)}
+                placeholder="e.g. scam, free crypto, dm me for bonus"
+                className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 min-[360px]:grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] font-semibold text-zinc-300 block mb-1">Match Type</label>
+                <select
+                  value={newFraudMatchType}
+                  onChange={(e) => setNewFraudMatchType(e.target.value as any)}
+                  className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                >
+                  <option value="contains">Contains Word</option>
+                  <option value="exact">Exact Match</option>
+                  <option value="regex">Regular Expression</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-semibold text-zinc-300 block mb-1">Enforcement Action</label>
+                <select
+                  value={newFraudAction}
+                  onChange={(e) => setNewFraudAction(e.target.value as any)}
+                  className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                >
+                  <option value="delete_and_warn">Delete &amp; Warn User</option>
+                  <option value="reply_only">Reply Only</option>
+                  <option value="delete">Delete Message Only</option>
+                  <option value="warn">Warn User Only</option>
+                  <option value="mute">Mute User in Chat</option>
+                  <option value="ban">Ban User from Chat &amp; Bot</option>
+                </select>
+              </div>
+            </div>
+
+            {(newFraudAction === 'mute' || newFraudAction === 'ban') && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-zinc-950/80 border border-amber-500/25">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-semibold text-amber-300">
+                      Custom Penalty Duration *
+                    </label>
+                    <span className="text-[10px] text-zinc-400 font-mono">
+                      Current: {newFraudDuration}
+                    </span>
+                  </div>
+
+                  {/* Custom Number + Unit Input */}
+                  <div className="grid grid-cols-1 min-[340px]:grid-cols-2 gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={9999}
+                      value={newFraudDurationValue}
+                      disabled={newFraudDurationUnit === 'permanent'}
+                      onChange={(e) => {
+                        const val = Math.max(1, parseInt(e.target.value) || 1);
+                        setNewFraudDurationValue(val);
+                        if (newFraudDurationUnit === 'minutes') setNewFraudDuration(`${val}m`);
+                        else if (newFraudDurationUnit === 'hours') setNewFraudDuration(`${val}h`);
+                        else if (newFraudDurationUnit === 'days') setNewFraudDuration(`${val}d`);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-500 font-mono disabled:opacity-40"
+                      placeholder="e.g. 30"
+                    />
+                    <select
+                      value={newFraudDurationUnit}
+                      onChange={(e) => {
+                        const unit = e.target.value as any;
+                        setNewFraudDurationUnit(unit);
+                        if (unit === 'permanent') setNewFraudDuration('permanent');
+                        else if (unit === 'minutes') setNewFraudDuration(`${newFraudDurationValue}m`);
+                        else if (unit === 'hours') setNewFraudDuration(`${newFraudDurationValue}h`);
+                        else if (unit === 'days') setNewFraudDuration(`${newFraudDurationValue}d`);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="minutes">Minutes (m)</option>
+                      <option value="hours">Hours (h)</option>
+                      <option value="days">Days (d)</option>
+                      <option value="permanent">Permanent</option>
+                    </select>
+                  </div>
+
+                  {/* Quick Select Preset Duration Chips */}
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    {['10m', '30m', '1h', '6h', '12h', '24h', 'permanent'].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => {
+                          setNewFraudDuration(d);
+                          if (d === 'permanent') {
+                            setNewFraudDurationUnit('permanent');
+                          } else if (d.endsWith('m')) {
+                            setNewFraudDurationUnit('minutes');
+                            setNewFraudDurationValue(parseInt(d));
+                          } else if (d.endsWith('h')) {
+                            setNewFraudDurationUnit('hours');
+                            setNewFraudDurationValue(parseInt(d));
+                          } else if (d.endsWith('d')) {
+                            setNewFraudDurationUnit('days');
+                            setNewFraudDurationValue(parseInt(d));
+                          }
+                        }}
+                        className={`text-[10px] px-2 py-0.5 rounded-lg border font-mono transition-all cursor-pointer ${
+                          newFraudDuration === d
+                            ? 'bg-amber-500/25 border-amber-500 text-amber-300 font-bold'
+                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-amber-300 block mb-1">
+                    Warning Limit Counter
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={newFraudMaxWarnings}
+                    onChange={(e) => setNewFraudMaxWarnings(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                    placeholder="3"
+                  />
+                  <span className="text-[9px] text-zinc-500 mt-1 block">
+                    Offenses before enforcing final {newFraudAction}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="text-[11px] font-semibold text-zinc-300 block mb-1">
+                {newFraudAction === 'reply_only' ? 'Reply / Caption Message' : 'Custom Warning Message'}{' '}
+                <span className="text-zinc-500 font-normal">
+                  (supports &#123;user_name&#125;, &#123;user_id&#125;, &#123;keyword&#125;, &#123;warning_count&#125;, &#123;max_warnings&#125;, &#123;action&#125;)
+                </span>
+              </label>
+              <textarea
+                value={newFraudWarningText}
+                onChange={(e) => setNewFraudWarningText(e.target.value)}
+                placeholder={
+                  newFraudAction === 'reply_only'
+                    ? 'Write your reply or video caption... (sent directly as a quote reply without deleting or warning)'
+                    : '⚠️ Warning ({warning_count}/{max_warnings}): Prohibited keyword detected. User: {user_name} | Action: {action}'
+                }
+                rows={2}
+                className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            {/* Optional Media URL, Type & Direct Video Upload Option */}
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[11px] font-semibold text-zinc-300 block mb-1">Optional Media URL</label>
+                  <input
+                    type="text"
+                    value={newFraudMediaUrl}
+                    onChange={(e) => {
+                      setNewFraudMediaUrl(e.target.value);
+                      if (e.target.value && newFraudVideoFile) {
+                        setNewFraudVideoFile(null);
+                        setNewFraudVideoName('');
+                        if (fraudVideoInputRef.current) fraudVideoInputRef.current.value = '';
+                      }
+                    }}
+                    placeholder="https://... or Telegram file ID"
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-zinc-300 block mb-1">Media Type</label>
+                  <select
+                    value={newFraudMediaType}
+                    onChange={(e) => setNewFraudMediaType(e.target.value as any)}
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="text">None / Text Only</option>
+                    <option value="video">Video</option>
+                    <option value="photo">Photo / Image</option>
+                    <option value="voice">Voice Note</option>
+                    <option value="audio">Audio</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Direct Video File Upload Option from Device / Gallery */}
+              <div className="p-3 rounded-xl bg-zinc-950/70 border border-dashed border-zinc-700/80 hover:border-amber-500/50 transition-colors">
+                <input
+                  type="file"
+                  ref={fraudVideoInputRef}
+                  accept="video/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setNewFraudVideoFile(file);
+                      setNewFraudVideoName(file.name);
+                      setNewFraudMediaType('video');
+                      setNewFraudMediaUrl('');
+                    }
+                  }}
+                />
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                      <VideoIcon className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <span>Upload Video File</span>
+                        <span className="text-[10px] text-amber-400/90 font-normal">(Device / Gallery)</span>
+                      </div>
+                      <p className="text-[10px] text-zinc-400 truncate">
+                        {newFraudVideoName 
+                          ? `Selected: ${newFraudVideoName} (${newFraudVideoFile ? (newFraudVideoFile.size / (1024 * 1024)).toFixed(1) + ' MB' : ''})` 
+                          : 'Select video file directly from your device/gallery'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto">
+                    {newFraudVideoName ? (
+                      <div className="flex items-center gap-1.5 min-w-0 w-full sm:w-auto">
+                        <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 text-xs font-medium border border-amber-500/40 truncate min-w-0 flex-1 sm:max-w-[200px]">
+                          {newFraudVideoName}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewFraudVideoFile(null);
+                            setNewFraudVideoName('');
+                            if (fraudVideoInputRef.current) fraudVideoInputRef.current.value = '';
+                          }}
+                          className="p-1 rounded-lg bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 transition-colors"
+                          title="Remove video file"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => fraudVideoInputRef.current?.click()}
+                        className="w-full sm:w-auto px-3.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-amber-500 hover:text-zinc-950 text-zinc-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Upload Video File</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => {
+                  resetFraudForm();
+                  setShowAddFraudRule(false);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingFraudRule}
+                className="px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {savingFraudRule && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{editingFraudRule ? 'Update Rule' : 'Save Keyword Rule'}</span>
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Rules List */}
+        {fraudRulesLoading ? (
+          <div className="p-8 text-center text-xs text-zinc-400 flex items-center justify-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+            <span>Loading keyword rules...</span>
+          </div>
+        ) : fraudRulesList.length === 0 ? (
+          <div className="p-8 rounded-2xl glass-panel border border-zinc-800 text-center space-y-2">
+            <Shield className="w-8 h-8 text-amber-400 mx-auto" />
+            <div className="text-xs font-semibold text-white">No restricted words configured</div>
+            <p className="text-[11px] text-zinc-400">
+              Click &quot;Add Word Rule&quot; above to create custom triggers that auto-delete, mute, warn, or ban users upon detection.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {fraudRulesList.map((rule) => (
+              <div
+                key={rule.id}
+                className={`p-4 rounded-2xl glass-panel border transition-all space-y-2.5 ${
+                  rule.enabled ? 'border-zinc-800 hover:border-zinc-700' : 'border-zinc-800/40 opacity-60'
+                }`}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
+                    <span className="text-sm font-bold text-white font-mono bg-zinc-950 px-2.5 py-0.5 rounded-lg border border-zinc-800 break-all max-w-full">
+                      {rule.keyword}
+                    </span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 font-mono">
+                      {rule.matchType}
+                    </span>
+                    <span
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                        rule.action === 'ban'
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                          : rule.action === 'mute'
+                          ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                          : rule.action === 'reply_only'
+                          ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                          : rule.action === 'delete_and_warn'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          : 'bg-zinc-800 text-zinc-300'
+                      }`}
+                    >
+                      {rule.action.replace(/_/g, ' ')}
+                    </span>
+                    {rule.mediaUrl && rule.mediaType && rule.mediaType !== 'text' && rule.mediaType !== 'none' && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                        {rule.mediaType === 'video' ? '🎥 Video Reply' : rule.mediaType === 'photo' ? '📸 Photo Reply' : `📎 ${rule.mediaType}`}
+                      </span>
+                    )}
+                    {rule.duration && (rule.action === 'mute' || rule.action === 'ban') && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-zinc-800 text-amber-300 border border-amber-500/20">
+                        ⏱️ {rule.duration}
+                      </span>
+                    )}
+                    {rule.action !== 'reply_only' && rule.maxWarnings && rule.maxWarnings > 1 && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-400 border border-zinc-700">
+                        Max: {rule.maxWarnings} warnings
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => startEditFraudRule(rule)}
+                      className="p-1.5 rounded-lg text-sky-300 bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 cursor-pointer transition-colors"
+                      title="Edit Rule"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => handleToggleFraudRule(rule)}
+                      className={`text-[10px] font-bold px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                        rule.enabled
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30'
+                          : 'bg-zinc-800 text-zinc-500 border border-zinc-700 hover:bg-zinc-700'
+                      }`}
+                    >
+                      {rule.enabled ? 'Active' : 'Paused'}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteFraudRule(rule.id)}
+                      className="p-1 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                      title="Delete Rule"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {rule.warningText && (
+                  <div className="p-2.5 rounded-xl bg-zinc-950/80 border border-zinc-800 text-xs text-zinc-300 italic break-words">
+                    {rule.warningText}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: CHAT IGNORE / WHITELIST
+  // -------------------------------------------------------------
+  if (subView === 'whitelist') {
+    const handleToggleStrictWhitelist = async () => {
+      setWhitelistSaving(true);
+      try {
+        const res = await api.toggleChatWhitelist(!chatWhitelistEnabled);
+        setChatWhitelistEnabled(Boolean(res.chatWhitelistEnabled));
+        setAllowedChats(res.allowedChats || []);
+        onRefreshSettings();
+        toast.success(
+          res.chatWhitelistEnabled
+            ? 'Strict Chat Whitelist enabled: non-whitelisted groups/channels are now silently ignored.'
+            : 'Strict Chat Whitelist disabled: bot responds in all active groups.'
+        );
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to update whitelist setting');
+      } finally {
+        setWhitelistSaving(false);
+      }
+    };
+
+    const handleAddWhitelistChat = async (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmedId = newWhitelistChatId.trim();
+      if (!/^-?\d+$/.test(trimmedId)) {
+        toast.error('Please enter a valid numeric Chat ID (e.g. -1001234567890)');
+        return;
+      }
+      setWhitelistSaving(true);
+      try {
+        const res = await api.addAllowedChat({
+          chatId: trimmedId,
+          title: newWhitelistTitle.trim() || undefined
+        });
+        setChatWhitelistEnabled(Boolean(res.chatWhitelistEnabled));
+        setAllowedChats(res.allowedChats || []);
+        setNewWhitelistChatId('');
+        setNewWhitelistTitle('');
+        onRefreshSettings();
+        toast.success('Chat added to authorized whitelist');
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to add chat ID');
+      } finally {
+        setWhitelistSaving(false);
+      }
+    };
+
+    const handleQuickAllowChannel = async (ch: { chatId: string; name?: string; type?: 'channel' | 'supergroup' | 'group'; username?: string }) => {
+      setWhitelistSaving(true);
+      try {
+        const res = await api.addAllowedChat({
+          chatId: ch.chatId,
+          title: ch.name,
+          type: ch.type,
+          username: ch.username
+        });
+        setChatWhitelistEnabled(Boolean(res.chatWhitelistEnabled));
+        setAllowedChats(res.allowedChats || []);
+        onRefreshSettings();
+        toast.success(`Whitelisted ${ch.name || ch.chatId}`);
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to allow chat');
+      } finally {
+        setWhitelistSaving(false);
+      }
+    };
+
+    const handleRemoveWhitelistChat = async (chatId: string) => {
+      setWhitelistSaving(true);
+      try {
+        const res = await api.removeAllowedChat(chatId);
+        setChatWhitelistEnabled(Boolean(res.chatWhitelistEnabled));
+        setAllowedChats(res.allowedChats || []);
+        onRefreshSettings();
+        toast.success('Chat removed from whitelist');
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to remove chat');
+      } finally {
+        setWhitelistSaving(false);
+      }
+    };
+
+    const connectedCandidates = (botSettings.requiredChannels || []).filter(
+      (ch: any) => ch?.chatId && !allowedChats.some((a) => a.chatId === String(ch.chatId).trim())
+    );
+
+    return (
+      <div className="space-y-4 animate-tab-fade-in">
+        {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-white flex items-center gap-1.5 truncate">
+                <VolumeX className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span className="truncate">Chat Ignore / Whitelist</span>
+              </h2>
+              <p className="text-[11px] text-zinc-400 truncate">
+                Silently ignore all non-whitelisted groups, supergroups &amp; channels
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={loadChatWhitelist}
+            disabled={whitelistLoading}
+            className="px-2.5 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${whitelistLoading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
+
+        {/* Master Guard Card */}
+        <div className="p-4 rounded-2xl glass-panel border border-zinc-800 space-y-3">
+          <div className="flex flex-col min-[380px]:flex-row min-[380px]:items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-bold text-white flex flex-wrap items-center gap-2">
+                <span>Strict Chat Whitelist Guard</span>
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${
+                    chatWhitelistEnabled
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                  }`}
+                >
+                  {chatWhitelistEnabled ? 'ACTIVE' : 'OFF'}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
+                When active, the bot drops every group/channel update outside the whitelist with zero replies, zero prompts, and zero auto-detection—even for admin commands. Private DMs still work.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleStrictWhitelist}
+              disabled={whitelistSaving}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
+                chatWhitelistEnabled
+                  ? 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
+                  : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700'
+              }`}
+            >
+              {chatWhitelistEnabled ? 'Enabled' : 'Enable Guard'}
+            </button>
+          </div>
+        </div>
+
+        {/* Add Authorized Chat Form */}
+        <form onSubmit={handleAddWhitelistChat} className="p-4 rounded-2xl glass-panel border border-cyan-500/25 space-y-3">
+          <div className="text-xs font-bold text-white flex items-center gap-1.5">
+            <Plus className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Authorize New Chat ID</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div>
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                Telegram Chat ID
+              </label>
+              <input
+                type="text"
+                value={newWhitelistChatId}
+                onChange={(e) => setNewWhitelistChatId(e.target.value)}
+                placeholder="-1001234567890"
+                className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                Group / Channel Label (Optional)
+              </label>
+              <input
+                type="text"
+                value={newWhitelistTitle}
+                onChange={(e) => setNewWhitelistTitle(e.target.value)}
+                placeholder="e.g. Official Support Group"
+                className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <span className="text-[10px] text-zinc-400">
+              Adding a chat automatically enables Strict Guard.
+            </span>
+            <button
+              type="submit"
+              disabled={whitelistSaving}
+              className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              {whitelistSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              <Plus className="w-3.5 h-3.5" />
+              <span>Allow Chat</span>
+            </button>
+          </div>
+        </form>
+
+        {/* Quick Allow from Connected Channels */}
+        {connectedCandidates.length > 0 && (
+          <div className="p-4 rounded-2xl glass-panel border border-zinc-800 space-y-2.5">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+              Quick Add Connected Chats
+            </div>
+            <div className="space-y-2">
+              {connectedCandidates.map((ch: any) => (
+                <div
+                  key={ch.chatId}
+                  className="p-2.5 rounded-xl bg-zinc-950/80 border border-zinc-800 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-white truncate">{ch.name}</div>
+                    <div className="text-[10px] font-mono text-zinc-400 truncate">{ch.chatId}</div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={whitelistSaving}
+                    onClick={() => handleQuickAllowChannel(ch)}
+                    className="px-2.5 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    + Allow
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Allowed Chats List */}
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs font-bold text-white tabular-nums">
+              Authorized Chats ({allowedChats.length})
+            </span>
+          </div>
+
+          {whitelistLoading ? (
+            <div className="p-6 text-center text-xs text-zinc-400 flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+              <span>Loading authorized chats...</span>
+            </div>
+          ) : allowedChats.length === 0 ? (
+            <div className="p-6 rounded-2xl glass-panel border border-zinc-800 text-center space-y-2">
+              <Shield className="w-7 h-7 text-cyan-400 mx-auto" />
+              <div className="text-xs font-semibold text-white">No whitelisted chats configured</div>
+              <p className="text-[11px] text-zinc-400">
+                Add a Telegram group/channel ID above or send <code className="text-cyan-300">/allowchat -100...</code> in bot DM.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {allowedChats.map((entry) => (
+                <div
+                  key={entry.chatId}
+                  className="p-3.5 rounded-2xl glass-panel border border-zinc-800 flex items-center justify-between gap-2.5"
+                >
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-xs font-bold text-white truncate">
+                        {entry.title || `Chat ${entry.chatId}`}
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-zinc-800 text-zinc-300 uppercase font-mono shrink-0">
+                        {entry.type || 'group'}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-400 font-mono">
+                      <span className="break-all">{entry.chatId}</span>
+                      {entry.username && <span className="text-cyan-400 truncate">{entry.username}</span>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(entry.chatId);
+                        toast.success('Chat ID copied');
+                      }}
+                      className="p-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white cursor-pointer"
+                      title="Copy Chat ID"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={whitelistSaving}
+                      onClick={() => handleRemoveWhitelistChat(entry.chatId)}
+                      className="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 cursor-pointer disabled:opacity-50"
+                      title="Remove from Whitelist"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Bot Command Reference */}
+        <div className="p-3.5 rounded-2xl glass-panel border border-zinc-800 space-y-1.5 text-[11px] text-zinc-400">
+          <div className="text-xs font-bold text-white">Telegram Bot Commands</div>
+          <div><code className="text-cyan-300">/allowchat &lt;chat_id&gt; [name]</code> — Whitelist chat &amp; activate guard</div>
+          <div><code className="text-cyan-300">/ignorechat &lt;chat_id&gt;</code> — Remove chat so bot ignores it</div>
+          <div><code className="text-cyan-300">/allowedchats</code> — View current whitelist status in DM</div>
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------
+  // SUB-VIEW: KEY GENERATOR
+  // -------------------------------------------------------------
+  if (subView === 'key_generator') {
+    const parsedNewKeyLines = keyGenText
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    const CHAR_TYPE_LABELS: Record<KeyGeneratorCharType, string> = {
+      numbers: 'Numbers Only (0-9)',
+      letters_upper: 'English Letters (A-Z)',
+      letters_mixed: 'English Letters (Mixed A-z)',
+      alphanumeric: 'Random Alphanumeric (A-Z, 0-9)'
+    };
+
+    const buildSampleKeyPreview = (prefix: string, length: string | number, charType: KeyGeneratorCharType) => {
+      const safeLen = Math.max(4, Math.min(64, Number(length) || 12));
+      const pools: Record<KeyGeneratorCharType, string> = {
+        numbers: '482910573649',
+        letters_upper: 'XKQMRTWPLZVN',
+        letters_mixed: 'XkQmRtWpLzVn',
+        alphanumeric: 'A9F3K8Q2M7X4'
+      };
+      const pattern = pools[charType] || pools.alphanumeric;
+      let body = '';
+      for (let i = 0; i < safeLen; i++) {
+        body += pattern[i % pattern.length];
+      }
+      return `${prefix.trim()}${body}`;
+    };
+
+    const formatRemainingTime = (expiresAt?: string | null) => {
+      if (!expiresAt) return 'Unlimited (No Expiry)';
+      const expMs = Date.parse(expiresAt);
+      if (!Number.isFinite(expMs)) return 'Unlimited';
+      const diffMs = expMs - Date.now();
+      if (diffMs <= 0) return 'Expired (Auto-deleting...)';
+      const totalMins = Math.ceil(diffMs / 60000);
+      if (totalMins < 60) return `Expires in ${totalMins}m`;
+      const hours = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+      if (hours < 24) return mins > 0 ? `Expires in ${hours}h ${mins}m` : `Expires in ${hours}h`;
+      const days = Math.floor(hours / 24);
+      const remHours = hours % 24;
+      return remHours > 0 ? `Expires in ${days}d ${remHours}h` : `Expires in ${days}d`;
+    };
+
+    const sortNewestFirst = (a: KeyPoolRecord, b: KeyPoolRecord) =>
+      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+    const addKeyPools = keyPoolsList.filter((p) => (p.mode || 'pool') === 'pool').sort(sortNewestFirst);
+    const generatorKeyPools = keyPoolsList.filter((p) => p.mode === 'generator').sort(sortNewestFirst);
+    const sharedKeyPools = keyPoolsList.filter((p) => p.mode === 'shared').sort(sortNewestFirst);
+
+    const handleCreateKeyPool = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (keyGenMode === 'pool' && parsedNewKeyLines.length === 0) {
+        toast.error('Please enter at least one key (one key per line).');
+        return;
+      }
+      if (keyGenMode === 'shared' && keyGenSharedText.trim().length === 0) {
+        toast.error('Please enter text or a key.');
+        return;
+      }
+      const parsedKeyGenLength = parseInt(keyGenLength, 10);
+      if (keyGenMode === 'generator' && (!keyGenLength.trim() || !Number.isFinite(parsedKeyGenLength) || parsedKeyGenLength < 4 || parsedKeyGenLength > 64)) {
+        toast.error('Please enter a valid key body length (4 – 64).');
+        return;
+      }
+      const parsedKeyGenDuration = parseInt(keyGenDurationValue, 10);
+      if (keyGenDurationUnit !== 'never' && (!keyGenDurationValue.trim() || !Number.isFinite(parsedKeyGenDuration) || parsedKeyGenDuration < 1)) {
+        toast.error('Please enter a valid expiry time (minimum 1).');
+        return;
+      }
+      setKeyGenCreating(true);
+      try {
+        const res = await api.createKeyPool(
+          keyGenMode === 'generator'
+            ? {
+                mode: 'generator',
+                title: keyGenTitle.trim() || undefined,
+                generatorConfig: {
+                  prefix: keyGenPrefix.trim(),
+                  length: Math.max(4, Math.min(64, parsedKeyGenLength)),
+                  charType: keyGenCharType
+                },
+                durationUnit: keyGenDurationUnit,
+                durationValue: keyGenDurationUnit === 'never' ? undefined : parsedKeyGenDuration
+              }
+            : keyGenMode === 'shared'
+            ? {
+                mode: 'shared',
+                title: keyGenTitle.trim() || undefined,
+                sharedText: keyGenSharedText.trim(),
+                durationUnit: keyGenDurationUnit,
+                durationValue: keyGenDurationUnit === 'never' ? undefined : parsedKeyGenDuration
+              }
+            : {
+                mode: 'pool',
+                title: keyGenTitle.trim() || undefined,
+                keysText: keyGenText,
+                durationUnit: keyGenDurationUnit,
+                durationValue: keyGenDurationUnit === 'never' ? undefined : parsedKeyGenDuration
+              }
+        );
+        setKeyGenTitle('');
+        if (keyGenMode === 'pool') setKeyGenText('');
+        if (keyGenMode === 'shared') setKeyGenSharedText('');
+        setKeyGenDurationUnit('never');
+        if (res.pool) {
+          setKeyPoolsList((prev) => [res.pool, ...prev.filter((p) => p.id !== res.pool.id)]);
+        }
+        await loadKeyPools(true);
+        if (res.pool?.deepLink) {
+          const okMsg =
+            keyGenMode === 'generator'
+              ? 'Generated dynamic key link & copied to clipboard!'
+              : keyGenMode === 'shared'
+              ? 'Text link generated & copied!'
+              : `Generated key link (${res.pool.totalKeys} keys) & copied to clipboard!`;
+          try {
+            await navigator.clipboard?.writeText(res.pool.deepLink);
+            toast.success(okMsg);
+          } catch {
+            toast.success(
+              keyGenMode === 'generator'
+                ? 'Dynamic key link created!'
+                : keyGenMode === 'shared'
+                ? 'Text link created!'
+                : `Generated key link with ${res.pool.totalKeys} keys!`
+            );
+          }
+        }
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to generate key link');
+      } finally {
+        setKeyGenCreating(false);
+      }
+    };
+
+    const openEditKeyPoolModal = (pool: KeyPoolRecord) => {
+      setEditingKeyPool(pool);
+      setEditKeyTitle(pool.title || '');
+      setEditKeyText((pool.keys || []).map((k) => k.value).join('\n'));
+      setEditSharedText(pool.sharedText || '');
+      setEditKeyPrefix(pool.generatorConfig?.prefix || '');
+      setEditKeyLength(String(pool.generatorConfig?.length || 12));
+      setEditKeyCharType(pool.generatorConfig?.charType || 'alphanumeric');
+      setEditKeyStatus(pool.status === 'disabled' ? 'disabled' : 'active');
+      setEditKeyExpiryMode('keep');
+      setEditKeyDurationValue('24');
+      setEditKeyResetClaims(false);
+    };
+
+    const handleSaveEditedKeyPool = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!editingKeyPool) return;
+      const isGenPool = editingKeyPool.mode === 'generator';
+      const isSharedPool = editingKeyPool.mode === 'shared';
+      if (isSharedPool) {
+        if (!editSharedText.trim()) {
+          toast.error('Text cannot be empty.');
+          return;
+        }
+      } else if (!isGenPool) {
+        const lines = editKeyText
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+        if (lines.length === 0) {
+          toast.error('At least one key line is required.');
+          return;
+        }
+      }
+      const parsedEditKeyLength = parseInt(editKeyLength, 10);
+      if (isGenPool && (!editKeyLength.trim() || !Number.isFinite(parsedEditKeyLength) || parsedEditKeyLength < 4 || parsedEditKeyLength > 64)) {
+        toast.error('Please enter a valid key length (4 – 64).');
+        return;
+      }
+      const parsedEditDuration = parseInt(editKeyDurationValue, 10);
+      if (editKeyExpiryMode !== 'keep' && editKeyExpiryMode !== 'never' && (!editKeyDurationValue.trim() || !Number.isFinite(parsedEditDuration) || parsedEditDuration < 1)) {
+        toast.error('Please enter a valid expiry duration (minimum 1).');
+        return;
+      }
+      setSavingKeyPool(true);
+      try {
+        const payload: any = {
+          title: editKeyTitle.trim() || editingKeyPool.title,
+          status: editKeyStatus,
+          resetClaims: editKeyResetClaims
+        };
+        if (isGenPool) {
+          payload.generatorConfig = {
+            prefix: editKeyPrefix.trim(),
+            length: Math.max(4, Math.min(64, parsedEditKeyLength)),
+            charType: editKeyCharType
+          };
+        } else if (isSharedPool) {
+          payload.sharedText = editSharedText.trim();
+        } else {
+          payload.keysText = editKeyText;
+        }
+        if (editKeyExpiryMode === 'never') {
+          payload.durationUnit = 'never';
+          payload.expiresAt = null;
+        } else if (editKeyExpiryMode !== 'keep') {
+          payload.durationUnit = editKeyExpiryMode;
+          payload.durationValue = parsedEditDuration;
+        }
+        await api.updateKeyPool(editingKeyPool.id, payload);
+        toast.success('Key link updated successfully!');
+        setEditingKeyPool(null);
+        await loadKeyPools();
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to update key link');
+      } finally {
+        setSavingKeyPool(false);
+      }
+    };
+
+    const handleToggleKeyPoolStatus = async (pool: KeyPoolRecord) => {
+      try {
+        const nextStatus = pool.status === 'disabled' ? 'active' : 'disabled';
+        await api.updateKeyPool(pool.id, { status: nextStatus });
+        toast.success(`Key link ${nextStatus === 'active' ? 'activated' : 'disabled'}`);
+        await loadKeyPools();
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to toggle key link status');
+      }
+    };
+
+    const handleDeleteKeyPool = async (pool: KeyPoolRecord) => {
+      const countNote =
+        pool.mode === 'generator'
+          ? `${pool.claimedKeys} generated claims`
+          : pool.mode === 'shared'
+          ? `${pool.totalClaims || 0} claims`
+          : `${pool.totalKeys} keys`;
+      if (!window.confirm(`Delete key link "${pool.title}" (${countNote})? This cannot be undone.`)) {
+        return;
+      }
+      try {
+        await api.deleteKeyPool(pool.id);
+        toast.success('Key link deleted');
+        if (expandedKeyPoolId === pool.id) setExpandedKeyPoolId(null);
+        await loadKeyPools();
+      } catch (err: any) {
+        toast.error(err?.message || 'Failed to delete key link');
+      }
+    };
+
+    return (
+      <div className="space-y-4 pb-28 animate-tab-fade-in">
+        {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {renderSubViewBackButton('menu', 'Back to More')}
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-white flex items-center gap-1.5 truncate">
+                <Key className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="truncate">Key Generator</span>
+              </h2>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => loadKeyPools(false)}
+            disabled={keyPoolsLoading}
+            className="px-2.5 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${keyPoolsLoading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
+
+        {/* Mode Switcher + Create Key Link Form */}
+        <form onSubmit={handleCreateKeyPool} className="p-4 rounded-2xl glass-panel border border-emerald-500/25 space-y-3.5">
+          {/* Three Distinct Modes Switcher */}
+          <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-zinc-950 border border-zinc-800">
+            <button
+              type="button"
+              onClick={() => {
+                setKeyGenMode('pool');
+                setExpandedKeyPoolId(null);
+              }}
+              className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 whitespace-nowrap transition-all cursor-pointer tabular-nums ${
+                keyGenMode === 'pool'
+                  ? 'bg-emerald-500 text-zinc-950 shadow'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Plus className="w-3.5 h-3.5 shrink-0" />
+              <span>Add Key ({addKeyPools.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setKeyGenMode('generator');
+                setExpandedKeyPoolId(null);
+              }}
+              className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 whitespace-nowrap transition-all cursor-pointer tabular-nums ${
+                keyGenMode === 'generator'
+                  ? 'bg-cyan-400 text-zinc-950 shadow'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+              <span>Generate ({generatorKeyPools.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setKeyGenMode('shared');
+                setExpandedKeyPoolId(null);
+              }}
+              className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 whitespace-nowrap transition-all cursor-pointer tabular-nums ${
+                keyGenMode === 'shared'
+                  ? 'bg-amber-400 text-zinc-950 shadow'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Link2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Text ({sharedKeyPools.length})</span>
+            </button>
+          </div>
+
+          {keyGenMode !== 'shared' && (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                  {keyGenMode === 'pool' ? (
+                    <>
+                      <Key className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Add Key</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Key Generator</span>
+                    </>
+                  )}
+                </div>
+                {keyGenMode === 'pool' ? (
+                  <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 font-mono font-semibold tabular-nums">
+                    {parsedNewKeyLines.length} {parsedNewKeyLines.length === 1 ? 'Key' : 'Keys'} Ready
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/25 font-mono font-semibold">
+                    Dynamic
+                  </span>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                  Link Title (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={keyGenTitle}
+                  onChange={(e) => setKeyGenTitle(e.target.value)}
+                  placeholder={
+                    keyGenMode === 'pool'
+                      ? 'e.g. Premium Access Keys Wave #1'
+                      : 'e.g. VIP Auto-Generated Access'
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </>
+          )}
+
+          {keyGenMode === 'pool' ? (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  Keys List (1 Key Per Line)
+                </label>
+              </div>
+              <textarea
+                rows={5}
+                value={keyGenText}
+                onChange={(e) => setKeyGenText(e.target.value)}
+                placeholder={'KEY-001\nKEY-002\nKEY-003'}
+                className="w-full px-3 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 resize-y"
+                required
+              />
+            </div>
+          ) : keyGenMode === 'shared' ? (
+            <div>
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
+                Text
+              </label>
+              <textarea
+                rows={4}
+                value={keyGenSharedText}
+                onChange={(e) => setKeyGenSharedText(e.target.value)}
+                placeholder="Enter key or text..."
+                className="w-full px-3 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-amber-400 resize-y"
+                required
+              />
+            </div>
+          ) : (
+            <div className="space-y-3 p-3 rounded-xl bg-zinc-950/70 border border-cyan-500/20">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                    Key Prefix (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={32}
+                    value={keyGenPrefix}
+                    onChange={(e) => setKeyGenPrefix(e.target.value)}
+                    placeholder="e.g. DARK-, VIP-, or blank"
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                    Key Body Length (4 – 64 chars)
+                  </label>
+                  <input
+                    type="number"
+                    min={4}
+                    max={64}
+                    value={keyGenLength}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === '' || /^\d+$/.test(raw)) {
+                        setKeyGenLength(raw);
+                      }
+                    }}
+                    placeholder="12"
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-cyan-400"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
+                  Character / Format Type
+                </label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(
+                    [
+                      { value: 'numbers', label: 'Numbers Only (0-9)' },
+                      { value: 'letters_upper', label: 'English Letters (A-Z)' },
+                      { value: 'letters_mixed', label: 'English Letters (Mixed)' },
+                      { value: 'alphanumeric', label: 'Random Alphanumeric' }
+                    ] as { value: KeyGeneratorCharType; label: string }[]
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setKeyGenCharType(opt.value)}
+                      className={`px-2.5 py-2 rounded-xl text-[11px] font-semibold border text-left transition-colors cursor-pointer ${
+                        keyGenCharType === opt.value
+                          ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/50'
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-zinc-400">
+                  Live Format Preview
+                </span>
+                <code className="text-xs font-mono text-cyan-300 break-all">
+                  {buildSampleKeyPreview(keyGenPrefix, keyGenLength, keyGenCharType)}
+                </code>
+              </div>
+            </div>
+          )}
+
+          {/* Link Timer / Expiry Duration */}
+          <div className="p-3 rounded-xl bg-zinc-950/70 border border-zinc-800/80 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                <span>Link Expiry Timer</span>
+              </span>
+              <span className="text-[10px] text-zinc-400">
+                {keyGenDurationUnit === 'never'
+                  ? 'Unlimited (No Expiry)'
+                  : keyGenDurationValue.trim()
+                  ? `Expires in ${keyGenDurationValue} ${keyGenDurationUnit}`
+                  : `Enter ${keyGenDurationUnit}`}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={keyGenDurationUnit}
+                onChange={(e) => setKeyGenDurationUnit(e.target.value as any)}
+                className="px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-emerald-500"
+              >
+                <option value="never">Unlimited (No Expiry)</option>
+                <option value="minutes">Minutes</option>
+                <option value="hours">Hours</option>
+                <option value="days">Days</option>
+              </select>
+
+              {keyGenDurationUnit !== 'never' && (
+                <input
+                  type="number"
+                  min={1}
+                  max={9999}
+                  required
+                  placeholder="Time"
+                  value={keyGenDurationValue}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === '' || /^\d+$/.test(raw)) {
+                      setKeyGenDurationValue(raw);
+                    }
+                  }}
+                  className="w-24 px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-emerald-500"
+                />
+              )}
+
+              <div className="flex flex-wrap items-center gap-1">
+                {[
+                  { label: 'Unlimited', unit: 'never' as const, val: 24 },
+                  { label: '30m', unit: 'minutes' as const, val: 30 },
+                  { label: '1h', unit: 'hours' as const, val: 1 },
+                  { label: '24h', unit: 'hours' as const, val: 24 },
+                  { label: '7d', unit: 'days' as const, val: 7 }
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => {
+                      setKeyGenDurationUnit(preset.unit);
+                      setKeyGenDurationValue(String(preset.val));
+                    }}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                      keyGenDurationUnit === preset.unit && (preset.unit === 'never' || Number(keyGenDurationValue) === preset.val)
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-white'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <span className="text-[10px] text-zinc-400">
+              {keyGenMode !== 'shared' && (
+                <span>
+                  Bot: <code className="text-emerald-300">{keyGenMode === 'pool' ? '/addkey' : '/genkey'}</code>
+                </span>
+              )}
+            </span>
+            <button
+              type="submit"
+              disabled={
+                keyGenCreating ||
+                (keyGenMode === 'pool' && parsedNewKeyLines.length === 0) ||
+                (keyGenMode === 'shared' && keyGenSharedText.trim().length === 0)
+              }
+              className={`px-4 py-2 rounded-xl text-zinc-950 text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 ${
+                keyGenMode === 'generator'
+                  ? 'bg-cyan-400 hover:bg-cyan-300'
+                  : keyGenMode === 'shared'
+                  ? 'bg-amber-400 hover:bg-amber-300'
+                  : 'bg-emerald-500 hover:bg-emerald-400'
+              }`}
+            >
+              {keyGenCreating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+              <span>
+                {keyGenMode === 'generator'
+                  ? 'Generate Dynamic Link'
+                  : keyGenMode === 'shared'
+                  ? 'Generate Link'
+                  : 'Generate Key Link'}
+              </span>
+            </button>
+          </div>
+        </form>
+
+        {/* Strictly Isolated Created Links Section (Only Active Mode Shown, Serial Order) */}
+        {(() => {
+          const activeList =
+            keyGenMode === 'generator'
+              ? generatorKeyPools
+              : keyGenMode === 'shared'
+              ? sharedKeyPools
+              : addKeyPools;
+
+          const renderKeyPoolCard = (pool: KeyPoolRecord, serialIndex: number) => {
+            const isGenPool = pool.mode === 'generator';
+            const isSharedPool = pool.mode === 'shared';
+            const isExpanded = expandedKeyPoolId === pool.id;
+            const statusBadge =
+              pool.status === 'disabled'
+                ? { label: 'Disabled', cls: 'bg-zinc-800 text-zinc-300 border-zinc-700' }
+                : pool.isExpired
+                ? { label: 'Expired', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/30' }
+                : !isGenPool && !isSharedPool && pool.isSoldOut
+                ? { label: 'Sold Out', cls: 'bg-rose-500/20 text-rose-300 border-rose-500/30' }
+                : { label: 'Active', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' };
+
+            return (
+              <div key={pool.id} className="p-3.5 rounded-2xl glass-panel border border-zinc-800 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono font-bold border tabular-nums ${
+                          isGenPool
+                            ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                            : isSharedPool
+                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                            : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                        }`}
+                      >
+                        #{serialIndex + 1}
+                      </span>
+                      <span className="text-xs font-bold text-white truncate">{pool.title}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold border ${statusBadge.cls}`}>
+                        {statusBadge.label}
+                      </span>
+                      {isGenPool ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/10 text-cyan-200 font-mono tabular-nums">
+                          {pool.claimedKeys} Generated
+                        </span>
+                      ) : isSharedPool ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/10 text-amber-200 font-mono tabular-nums">
+                          {pool.totalClaims || 0} Claims
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/10 text-white/85 font-mono tabular-nums">
+                          {pool.remainingKeys} / {pool.totalKeys} Left
+                        </span>
+                      )}
+                    </div>
+
+                    {isGenPool && pool.generatorConfig && (
+                      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10px] font-mono text-cyan-200/85">
+                        <span>Prefix: {pool.generatorConfig.prefix || 'None'}</span>
+                        <span>·</span>
+                        <span>Length: {pool.generatorConfig.length}</span>
+                        <span>·</span>
+                        <span>{CHAR_TYPE_LABELS[pool.generatorConfig.charType] || 'Alphanumeric'}</span>
+                      </div>
+                    )}
+
+                    {isSharedPool && pool.sharedText && (
+                      <div className="px-2.5 py-1.5 rounded-xl bg-zinc-950/80 border border-amber-500/20 text-[11px] font-mono text-amber-200 whitespace-pre-wrap break-all line-clamp-3">
+                        {pool.sharedText}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-400">
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3 h-3 text-amber-400" />
+                        {formatRemainingTime(pool.expiresAt)}
+                      </span>
+                      <span className="tabular-nums">
+                        {isSharedPool ? `Total Claims: ${pool.totalClaims || 0} (${pool.keys?.length || 0} users)` : `Claimed: ${pool.claimedKeys}`}
+                      </span>
+                      <span>Created {new Date(pool.createdAt).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleKeyPoolStatus(pool)}
+                      className={`px-2 py-1.5 rounded-xl text-[10px] font-bold border cursor-pointer ${
+                        pool.status === 'disabled'
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                          : 'bg-zinc-900 text-zinc-300 border-zinc-800 hover:text-white'
+                      }`}
+                      title={pool.status === 'disabled' ? 'Enable Link' : 'Disable Link'}
+                    >
+                      {pool.status === 'disabled' ? 'Enable' : 'Pause'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditKeyPoolModal(pool)}
+                      className="p-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white cursor-pointer"
+                      title="Edit Key Link"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteKeyPool(pool)}
+                      className="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 cursor-pointer"
+                      title="Delete Key Link"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Shareable Deep Link Row */}
+                <div className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800">
+                  <code
+                    className={`text-[11px] font-mono truncate flex-1 select-all ${
+                      isGenPool ? 'text-cyan-300' : isSharedPool ? 'text-amber-300' : 'text-emerald-300'
+                    }`}
+                  >
+                    {pool.deepLink}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(pool.deepLink);
+                      toast.success('Claim link copied!');
+                    }}
+                    className={`px-2.5 py-1 rounded-lg border text-[10px] font-bold flex items-center gap-1 shrink-0 cursor-pointer ${
+                      isGenPool
+                        ? 'bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border-cyan-500/30'
+                        : isSharedPool
+                        ? 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30'
+                        : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
+                    }`}
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>Copy</span>
+                  </button>
+                  {pool.deepLink.startsWith('http') && (
+                    <a
+                      href={pool.deepLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white shrink-0"
+                      title="Open Link"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+
+                {/* Expand / Collapse Keys Inspection */}
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedKeyPoolId(isExpanded ? null : pool.id)}
+                    className="text-[11px] font-semibold text-zinc-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                  >
+                    <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                    <span>
+                      {isExpanded
+                        ? isSharedPool
+                          ? 'Hide Claimers Log'
+                          : 'Hide Keys Log'
+                        : isGenPool
+                        ? `Inspect ${pool.totalKeys} Generated Keys`
+                        : isSharedPool
+                        ? `Inspect ${pool.keys?.length || 0} Claimers`
+                        : `Inspect ${pool.totalKeys} Keys & Claims`}
+                    </span>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="mt-2 max-h-56 overflow-y-auto space-y-1.5 pr-1">
+                      {(pool.keys || []).length === 0 ? (
+                        <div className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 text-[11px] text-zinc-400 text-center">
+                          {isSharedPool
+                            ? 'No claims yet.'
+                            : 'No keys generated yet.'}
+                        </div>
+                      ) : (
+                        (pool.keys || []).map((k, idx) => (
+                          <div
+                            key={k.id}
+                            className="px-2.5 py-1.5 rounded-xl bg-zinc-950/90 border border-zinc-800/80 flex items-center justify-between gap-2 text-[11px]"
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <span className="text-zinc-500 font-mono shrink-0">#{idx + 1}</span>
+                              <code className="font-mono text-white truncate">{k.value}</code>
+                            </div>
+                            {k.claimedBy ? (
+                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-rose-500/15 text-rose-300 border border-rose-500/25 font-mono shrink-0">
+                                Claimed by {k.claimedByUsername ? `@${k.claimedByUsername}` : k.claimedBy}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 font-semibold shrink-0">
+                                Available
+                              </span>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          };
+
+          if (keyPoolsLoading && keyPoolsList.length === 0) {
+            return (
+              <div className="p-6 text-center text-xs text-zinc-400 flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                <span>Loading key links...</span>
+              </div>
+            );
+          }
+
+          return (
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-2">
+                  {keyGenMode === 'generator' ? (
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                  ) : keyGenMode === 'shared' ? (
+                    <Link2 className="w-3.5 h-3.5 text-amber-400" />
+                  ) : (
+                    <Key className="w-3.5 h-3.5 text-emerald-400" />
+                  )}
+                  <span className="text-xs font-bold text-white tabular-nums">
+                    {keyGenMode === 'generator'
+                      ? `Generate Key Links (${activeList.length})`
+                      : keyGenMode === 'shared'
+                      ? `Text Links (${activeList.length})`
+                      : `Add Key Links (${activeList.length})`}
+                  </span>
+                </div>
+                {keyGenMode !== 'shared' && (
+                  <span className="text-[10px] text-zinc-400">
+                    {keyGenMode === 'generator'
+                      ? 'Newest First · Dynamic Rules'
+                      : 'Newest First · One-by-One Pool'}
+                  </span>
+                )}
+              </div>
+
+              {activeList.length === 0 ? (
+                <div className="p-5 rounded-2xl glass-panel border border-zinc-800/80 text-center space-y-1.5">
+                  {keyGenMode === 'generator' ? (
+                    <>
+                      <Sparkles className="w-6 h-6 text-cyan-400/70 mx-auto" />
+                      <div className="text-xs font-semibold text-white">No Generate Key links yet</div>
+                    </>
+                  ) : keyGenMode === 'shared' ? (
+                    <>
+                      <Link2 className="w-6 h-6 text-amber-400/70 mx-auto" />
+                      <div className="text-xs font-semibold text-white">No Text links yet</div>
+                    </>
+                  ) : (
+                    <>
+                      <Key className="w-6 h-6 text-emerald-400/70 mx-auto" />
+                      <div className="text-xs font-semibold text-white">No Add Key links yet</div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {activeList.map((pool, idx) => renderKeyPoolCard(pool, idx))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Edit Key Pool Modal */}
+        {editingKeyPool && createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-md animate-in fade-in duration-200"
+            onClick={() => setEditingKeyPool(null)}
+          >
+            <form
+              onSubmit={handleSaveEditedKeyPool}
+              onClick={(e) => e.stopPropagation()}
+              className="glass-panel w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-[24px] p-4 sm:p-5 text-white space-y-3.5"
+            >
+              <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-white/10">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Edit2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <h3 className="text-sm font-bold text-white truncate">
+                    {editingKeyPool.mode === 'generator'
+                      ? 'Edit Key Generator Link'
+                      : editingKeyPool.mode === 'shared'
+                      ? 'Edit Text Link'
+                      : 'Edit Add Key Link'}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingKeyPool(null)}
+                  className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white/70 hover:text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                  Link Title
+                </label>
+                <input
+                  type="text"
+                  value={editKeyTitle}
+                  onChange={(e) => setEditKeyTitle(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  required
+                />
+              </div>
+
+              {editingKeyPool.mode === 'generator' ? (
+                <div className="space-y-3 p-3 rounded-xl bg-zinc-950/70 border border-cyan-500/20">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                        Key Prefix (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={32}
+                        value={editKeyPrefix}
+                        onChange={(e) => setEditKeyPrefix(e.target.value)}
+                        placeholder="e.g. DARK-"
+                        className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-cyan-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                        Key Length (4 – 64)
+                      </label>
+                      <input
+                        type="number"
+                        min={4}
+                        max={64}
+                        value={editKeyLength}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === '' || /^\d+$/.test(raw)) {
+                            setEditKeyLength(raw);
+                          }
+                        }}
+                        placeholder="12"
+                        className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-cyan-400"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                      Character / Format Type
+                    </label>
+                    <select
+                      value={editKeyCharType}
+                      onChange={(e) => setEditKeyCharType(e.target.value as KeyGeneratorCharType)}
+                      className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-cyan-400"
+                    >
+                      <option value="numbers">Numbers Only (0-9)</option>
+                      <option value="letters_upper">English Letters Only (A-Z)</option>
+                      <option value="letters_mixed">English Letters Only (Mixed A-z)</option>
+                      <option value="alphanumeric">Random Alphanumeric (A-Z, 0-9)</option>
+                    </select>
+                  </div>
+                  <div className="p-2 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-zinc-400">Preview:</span>
+                    <code className="text-[11px] font-mono text-cyan-300 truncate">
+                      {buildSampleKeyPreview(editKeyPrefix, editKeyLength, editKeyCharType)}
+                    </code>
+                  </div>
+                </div>
+              ) : editingKeyPool.mode === 'shared' ? (
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                    Text
+                  </label>
+                  <textarea
+                    rows={5}
+                    value={editSharedText}
+                    onChange={(e) => setEditSharedText(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-amber-400 resize-y"
+                    required
+                  />
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                      Keys (1 Key Per Line)
+                    </label>
+                    <span className="text-[10px] text-zinc-400 font-mono">
+                      {editKeyText.split(/\r?\n/).map(l => l.trim()).filter(Boolean).length} lines
+                    </span>
+                  </div>
+                  <textarea
+                    rows={6}
+                    value={editKeyText}
+                    onChange={(e) => setEditKeyText(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 resize-y"
+                    required
+                  />
+                  <p className="text-[10px] text-zinc-400 mt-1">
+                    Already-claimed keys stay marked as claimed unless you reset claims below.
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                    Status
+                  </label>
+                  <select
+                    value={editKeyStatus}
+                    onChange={(e) => setEditKeyStatus(e.target.value as any)}
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="active">Active</option>
+                    <option value="disabled">Disabled (Paused)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                    Timer Update
+                  </label>
+                  <select
+                    value={editKeyExpiryMode}
+                    onChange={(e) => setEditKeyExpiryMode(e.target.value as any)}
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="keep">Keep Current Timer</option>
+                    <option value="never">Unlimited (No Expiry)</option>
+                    <option value="minutes">Reset: Minutes</option>
+                    <option value="hours">Reset: Hours</option>
+                    <option value="days">Reset: Days</option>
+                  </select>
+                </div>
+              </div>
+
+              {editKeyExpiryMode !== 'keep' && editKeyExpiryMode !== 'never' && (
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-1">
+                    New Duration ({editKeyExpiryMode})
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={9999}
+                    required
+                    placeholder="Time"
+                    value={editKeyDurationValue}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === '' || /^\d+$/.test(raw)) {
+                        setEditKeyDurationValue(raw);
+                      }
+                    }}
+                    className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              )}
+
+              <label className="flex items-center gap-2 p-2.5 rounded-xl bg-zinc-950/70 border border-zinc-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editKeyResetClaims}
+                  onChange={(e) => setEditKeyResetClaims(e.target.checked)}
+                  className="rounded border-zinc-700"
+                />
+                <span className="text-[11px] text-zinc-300">
+                  {editingKeyPool.mode === 'generator'
+                    ? 'Clear generated key history (allow users to claim again)'
+                    : editingKeyPool.mode === 'shared'
+                    ? 'Clear claimers history & reset total claims counter'
+                    : 'Reset claim history (mark all keys unclaimed again)'}
+                </span>
+              </label>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingKeyPool(null)}
+                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingKeyPool}
+                  className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {savingKeyPool && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Save Changes</span>
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
+      </div>
+    );
+  }
+
+  return null;
+};
